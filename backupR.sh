@@ -56,6 +56,22 @@ AMARILLO_B=$'\e[1;33m'
 # ==============================
 # UTILIDADES
 # ==============================
+# ini log
+log(){ 
+    #printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*" | tee -a "$logfile"; 
+    # 1. Crea el mensaje con la fecha y hora
+    local mensaje="[$(date --iso-8601=seconds)] $*"
+    # 2. Lo muestra en pantalla tal cual (con colores)
+    echo -e "$mensaje"
+    # 3. Borra los códigos de color y lo guarda en el archivo
+    echo -e "$mensaje" | sed 's/\x1b\[[0-9;]*m//g' >> "$logfile"
+}
+# fin log
+# ==============================
+# ini err
+err(){ log "ERROR: $*"; }
+# fin err
+# ==============================
 # ini reiniciar_variables
 reiniciar_variables() {
     opcion=-1 # opción inicializada a -1
@@ -89,14 +105,14 @@ terminar_con_error() {
     local codigo_salida="${2:-1}"
 
     echo "" >&2
-    echo -e "${ROJO}[ERROR CRÍTICO]: $mensaje${NC}" | tee -a "$logfile"
+    log "${ROJO}[ERROR CRÍTICO]: $mensaje${NC}"
     
     # === LÓGICA DE LIMPIEZA GENERAL ===
-    echo "[*] Ejecutando limpieza antes de salir..." | tee -a "$logfile"
+    log "[*] Ejecutando limpieza antes de salir..."
     # Ejemplo: rm -rf "$DIR_TEMPORAL"
     reiniciar_variables
     
-    echo "[-] Script abortado correctamente." | tee -a "$logfile"
+    log "[-] Script abortado correctamente."
     if [[ -t 0 ]]; then
         read -p "${AMARILLO}Pulse una tecla para salir...${NC}"
     fi
@@ -160,7 +176,7 @@ garantizar_sudo() {
             echo "" # Salto de línea
 
             # Validar la contraseña introducida
-            if ! echo "$SUDO_PASS" | sudo -S -v &> /dev/null; then
+            if ! echo "$MI_PASSWORD" | sudo -S -v &> /dev/null; then
                 echo -e "${ROJO}[-] Error: Contraseña incorrecta o permisos insuficientes.${NC}" >&2
                 unset MI_PASSWORD
                 #exit 1
@@ -490,9 +506,9 @@ explicar_error_rsync() {
 
     # Imprimir la alerta con color y guardarla en el log
     if [ "$rc" -eq 0 ]; then
-        echo -e "${VERDE}[OK]: $mensaje${NC}" | tee -a "$logfile"
+        log "${VERDE}[OK]: $mensaje${NC}" 
     else
-        echo -e "${ROJO}[ERROR - Código $rc]: $mensaje${NC}" | tee -a "$logfile"
+        log -e "${ROJO}[ERROR - Código $rc]: $mensaje${NC}" 
     fi
 }
 # fin explicar_error_rsync
@@ -501,6 +517,7 @@ explicar_error_rsync() {
 cambiar_propietario_contenido() {
     local directorio="$1"
     local usuario_grupo="$2"
+    #echo "directorio=$directorio ; usuario_grupo=$usuario_grupo" | tee -a "$logfile"
     
     # Guardar estado actual de nullglob y activarlo localmente
     local nullglob_status
@@ -509,12 +526,13 @@ cambiar_propietario_contenido() {
 
     # Capturar los archivos en un array seguro
     local archivos=("$directorio"/*)
-
+        
     # Restaurar el estado original de nullglob inmediatamente
     eval "$nullglob_status"
 
     # Si el array tiene elementos, ejecutamos el chown de forma segura
     if [ ${#archivos[@]} -gt 0 ]; then
+        #echo "CMD: chown -vR $usuario_grupo ${archivos[@]}" | tee -a "$logfile"
         sudo chown -vR "$usuario_grupo" "${archivos[@]}" 2>&1 | tee -a "$logfile"
         # Capturamos el PIPESTATUS del chown (no del tee)
         return ${PIPESTATUS[0]}
@@ -524,14 +542,6 @@ cambiar_propietario_contenido() {
     return 0
 }
 # fin cambiar_propietario_contenido
-# ==============================
-# ini log
-log(){ printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*" | tee -a "$logfile"; }
-# fin log
-# ==============================
-# ini err
-err(){ log "ERROR: $*"; }
-# fin err
 # ==============================
 # ini do_rsync
 do_rsync() {
@@ -547,8 +557,12 @@ do_rsync() {
     shift 2>/dev/null || true
     local label=${1:-"rsync"}
     shift 2>/dev/null || true
-    local logfile=${1:-"$DIR_SCRIPT/BACKUP.log"}
+    local logpath="${1:-}"
     shift 2>/dev/null || true
+    # Si no se pasó un logfile, usar la variable global $logfile establecida por set_logfile
+    if [[ -z "$logpath" ]]; then
+        logpath="$logfile"
+    fi
 
     # parámetros opcionales: nombre del array de opciones rsync, nombre del array exclude, password
     local modarr_name=${1:-}
@@ -587,7 +601,7 @@ do_rsync() {
     src="${src%/}/"
     dst="${dst%/}/"
 
-    echo "INICIO RSYNC ($label): $start_time" | tee -a "$logfile"
+    log "INICIO RSYNC ($label): $start_time"
     #echo "COMANDO: $( [[ "$use_sudo" =~ ^(yes|sudo)$ ]] && printf 'sudo ' )rsync ${modarr_ref[*]} ${modexclude_ref[*]} '$src' '$dst'" | tee -a "$logfile"
     # limpiar dobles slashes y normalizar dst antes de parsear
     dst="${dst%/}"
@@ -610,7 +624,7 @@ do_rsync() {
     fi
     cmd+=( "${modarr_ref[@]}" "${modexclude_ref[@]}" "$src" "$dst" )
 
-    echo "COMANDO: ${cmd[@]}" | tee -a "$logfile"
+    echo "COMANDO: ${cmd[@]}" | tee -a "$logpath"
     # local cmd=()
     # if [[ "$use_sudo" = "sudo" ]]; then
     #     cmd=( sudo rsync )
@@ -638,7 +652,7 @@ do_rsync() {
         # preferir rsync (ssh/scp) cuando el formato es user@host:/path o rsync://
         if [[ "$src" =~ ^[^/]+@[^:]+: ]] || [[ "$dst" =~ ^[^/]+@[^:]+: ]] || [[ "$src" =~ ^rsync:// ]] || [[ "$dst" =~ ^rsync:// ]]; then
             # usar rsync (como ahora)
-            "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+            "${cmd[@]}" 2>&1 | tee -a "$logpath" && true
             rsync_rc=${PIPESTATUS[0]}
         else
             #Detectar si el origen es Google drive
@@ -662,15 +676,15 @@ do_rsync() {
             # rclone acepta ftp,sftp,http,webdav,s3,swift,smb,...
             # ejemplo: rclone copy SRC DST --progress
             if command -v rclone >/dev/null 2>&1; then
-                rclone copy "$src" "$dst" --progress --transfers=4 --log-file="$logfile" $modificadores_drive || rc=$?
+                rclone copy "$src" "$dst" --progress --transfers=4 --log-file="$logpath" $modificadores_drive || rc=$?
             else
-                echo "[ERROR] Ruta remota no soportada y rclone no instalado" | tee -a "$logfile"
+                log "[ERROR] Ruta remota no soportada y rclone no instalado" 
                 rc=1
             fi
         fi
     else
         # local-to-local: usar rsync como ahora
-        "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+        "${cmd[@]}" 2>&1 | tee -a "$logpath" && true
         rsync_rc=${PIPESTATUS[0]}
     fi
 
@@ -679,16 +693,16 @@ do_rsync() {
     local elapsed=$((end_ts - start_ts))
     local elapsed_fmt=$(date -u -d "@$elapsed" +%H:%M:%S)
 
-    echo "FIN: $end_time" | tee -a "$logfile"
-    echo "DURACIÓN: $elapsed_fmt" | tee -a "$logfile"
-    echo "HORA INICIO: $start_time" | tee -a "$logfile"
-    echo "HORA FIN: $end_time" | tee -a "$logfile"
-    echo "" | tee -a "$logfile"
+    echo "FIN: $end_time" | tee -a "$logpath"
+    echo "DURACIÓN: $elapsed_fmt" | tee -a "$logpath"
+    echo "HORA INICIO: $start_time" | tee -a "$logpath"
+    echo "HORA FIN: $end_time" | tee -a "$logpath"
+    echo "" | tee -a "$logpath"
 
     if [[ $rsync_rc -eq 0 ]]; then
-        echo -e "${VERDE}[OK][$label] Copia completada.${NC}" | tee -a "$logfile"
+        log "${VERDE}[OK][$label] Copia completada.${NC}" 
     else
-        echo -e "${ROJO}[ERROR][$label] rsync devolvió $rsync_rc.${NC}" | tee -a "$logfile"
+        log "${ROJO}[ERROR][$label] rsync devolvió $rsync_rc.${NC}" 
         explicar_error_rsync "$rsync_rc"
     fi
 
@@ -1411,7 +1425,7 @@ backup_LAMP(){
     # mkdir -p "$(dirname "$logfile")"
     set_logfile "BACKUP-LAMP"
 
-    echo "Iniciando respaldo del sistema LAMP..." | tee -a "$logfile"
+    log "Iniciando respaldo del sistema LAMP..." 
     nom_origen="LAMP"
     local DIRECTORIO="$dirdestino"
     local DIRLAMP="$dirdestino/$nom_pcu/$nom_origen"
@@ -1421,39 +1435,39 @@ backup_LAMP(){
     dirorigenC=$(realpath "$dirorigen")
     dirdestinoC=$(realpath "$dirdestino")
     if [[ "$dirorigenC" == "$dirdestinoC" ]]; then
-        echo -e "${ROJO}[ERROR]: El directorio de origen y destino no puede ser el mismo.${NC}" | tee -a "$logfile"
+        log "${ROJO}[ERROR]: El directorio de origen y destino no puede ser el mismo.${NC}" 
         dirsincompatibles=1
     elif [[ "$dirdestinoC" == "$dirorigenC/"* ]]; then
-        echo -e "${ROJO}[ERROR]: El destino no debe estar dentro del origen.${NC}" | tee -a "$logfile"
+        log "${ROJO}[ERROR]: El destino no debe estar dentro del origen.${NC}" 
         dirsincompatibles=1
     fi
 
-    echo 'Espacio en disco' | tee -a "$logfile"
+    log 'Espacio en disco' 
     #df -TBG "$DIRECTORIO" | tee -a "$logfile"
     mostrar_info_fs "$DIRECTORIO" "$logfile"
     #LIBRE=$(df --output=avail -BG "$DIRECTORIO" | tail -n 1 | tr -d '[:space:]' | tr -d 'G')
     LIBRE=$(obtener_espacio_libre_gb "$DIRECTORIO")
-    echo "${LIBRE} GB" | tee -a "$logfile"
+    log "${LIBRE} GB" 
 
     garantizar_sudo
-    echo 'Espacio de workspace' | tee -a "$logfile"
+    log 'Espacio de workspace' 
     #sudo du -s -BG "$dirorigen" 2>&1 | tee -a "$logfile"
     mostrar_tamano_dir_log "$dirorigen" "$logfile"
 
-    echo 'Espacio de copia (estimado)' | tee -a "$logfile"
+    log 'Espacio de copia (estimado)' 
     #TAM=$(du -csBG /home/"$USER"/.config/filezilla/ /etc/apache2/sites-available/ /home/sql/ /var/lib/ZendFramework* /home/"$USER"/workspace/ 2>/dev/null | awk '/total/ {print $1}' | tr -d 'G')
     TAM=$(obtener_tamano_multiples_dir_gb /home/"$USER"/.config/filezilla/ /etc/apache2/sites-available/ /home/sql/ /var/lib/ZendFramework* /home/"$USER"/workspace/)
     TAM=${TAM:-0}
-    echo "${TAM} GB " | tee -a "$logfile"
+    log "${TAM} GB " 
 
     rc=0
 
     if [[ -d "$DIRECTORIO" && $dirsincompatibles -eq 0 ]]; then
-        echo "Disco ${DIRECTORIO} montado" | tee -a "$logfile"
+        log "Disco ${DIRECTORIO} montado" 
 
         if (( LIBRE >= TAM )); then
-            echo "El directorio ${DIRECTORIO} tiene ${LIBRE} GB libres y la copia ${TAM} GB" | tee -a "$logfile"
-            mkdir -p "$DIRLAMP" || echo -e "${ROJO}[ERROR]: No se pudo crear $DIRLAMP${NC}" | tee -a "$logfile"
+            log "El directorio ${DIRECTORIO} tiene ${LIBRE} GB libres y la copia ${TAM} GB" 
+            mkdir -p "$DIRLAMP" || log "${ROJO}[ERROR]: No se pudo crear $DIRLAMP${NC}"
 
             # antes de usar do_rsync, inicializar y validar sudo:
             local rc=0
@@ -1469,11 +1483,11 @@ backup_LAMP(){
                     if sudo -v 2>/dev/null; then
                         sudo_ok="sudo"
                     else
-                        echo -e "${ROJO}No se pudo validar sudo. Se intentará continuar sin sudo.${NC}" | tee -a "$logfile"
+                        log "${ROJO}No se pudo validar sudo. Se intentará continuar sin sudo.${NC}" 
                         sudo_ok=""
                     fi
                 else
-                    echo "Continuando sin sudo; algunas operaciones que requieren privilegios fallarán." | tee -a "$logfile"
+                    log "Continuando sin sudo; algunas operaciones que requieren privilegios fallarán." 
                     sudo_ok=""
                 fi
             fi
@@ -1499,10 +1513,11 @@ backup_LAMP(){
                 read -r respaldarbd
                 respaldarbd=${respaldarbd:-S}
                 if [[ $respaldarbd == [Ss] ]]; then
-                    echo "Se realizará el respaldo de MySQL" | tee -a "$logfile"
+                    log "Se realizará el respaldo de MySQL" 
                     read -rp "${AMARILLO}Usuario de MySQL [admin]: ${NC}" MYSQL_USER
                     MYSQL_USER=${MYSQL_USER:-admin}
                     read -s -rp "${AMARILLO}Contraseña de MySQL [admin]: ${NC}" MYSQL_PASS
+                    MYSQL_PASS=${MYSQL_PASS:-admin}
                     echo
                     read -rp "${AMARILLO}Host de MySQL [localhost]: ${NC}" MYSQL_HOST
                     MYSQL_HOST=${MYSQL_HOST:-localhost}
@@ -1512,31 +1527,31 @@ backup_LAMP(){
                     unset MYSQL_PWD
 
                     if [[ -z "$dbs" ]]; then
-                        echo -e "${ROJO}[WARN]: No se encontraron bases de datos para respaldar.${NC}" | tee -a "$logfile"
+                        log "${ROJO}[WARN]: No se encontraron bases de datos para respaldar.${NC}" 
                     else
                         mkdir -p "$dirorigen/sql"
                         for db in $dbs; do
-                            echo "Respaldando base de datos: $db" | tee -a "$logfile"
+                            log "Respaldando base de datos: $db" 
                             if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-                                echo -e "SIMULACIÓN DE BACKUP MySQL" | tee -a "$logfile"
-                                echo "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER $db > $dirorigen/sql/$db.sql" | tee -a "$logfile"
+                                log -e "SIMULACIÓN DE BACKUP MySQL" 
                                 # Crear archivo simulado (vacío o con comentario)
                                 # echo "-- [DRY-RUN] Simulación de dump para $db" > "$dirorigen/sql/$db.sql.dryrun"
                                 #Usar mysqlcheck
                                 #mysqlcheck -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" 2>>"$logfile" || rc=1
                                 #Hacer dump a null
-                                echo "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER $db (sin guardar a archivo)" | tee -a "$logfile"
-                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" > /dev/null 2>>"$logfile"; then
-                                    echo -e "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" | tee -a "$logfile"
+                                log "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER -p*** $db (sin guardar a archivo)" 
+                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" -p"$MYSQL_PASS" "$db" > /dev/null 2>>"$logfile"; then
+                                    log "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" 
                                     rc=1
                                     continue
                                 fi
-                                echo "[DRY-RUN] Dump de $db validado correctamente (sin guardar)" | tee -a "$logfile"
+                                log "[DRY-RUN] Dump de $db validado correctamente (sin guardar)" 
 
                                 #echo "mysqldump -h ""$MYSQL_HOST"" -u ""$MYSQL_USER"" ""$db"" > ""$dirorigen/sql/$db.sql"" | tee -a "$logfile"
                             else
-                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" > "$dirorigen/sql/$db.sql" 2>>"$logfile"; then
-                                    echo -e "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" | tee -a "$logfile"
+                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" -p"$MYSQL_PASS" "$db" > "$dirorigen/sql/$db.sql" 2>>"$logfile"; then
+                                    log "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER -p*** $db > $dirorigen/sql/$db.sql" 
+                                    log "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" 
                                     rc=1
                                     continue
                                 fi
@@ -1544,7 +1559,7 @@ backup_LAMP(){
                         done
                     fi
                 else
-                    echo "No se realizará el respaldo de MySQL" | tee -a "$logfile"
+                    log "No se realizará el respaldo de MySQL" 
                 fi
             fi
             
@@ -1556,8 +1571,8 @@ backup_LAMP(){
                 #Evita el asterisco suelto y el '|| true'
                 cambiar_propietario_contenido "$DIRLAMP/filezilla" "$USER:$USER"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio de configuración de filezilla.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio de configuración de filezilla.${NC}" 
+                #rc=1
             fi
 
             if [[ -d "/etc/apache2/sites-available" ]]; then
@@ -1567,8 +1582,8 @@ backup_LAMP(){
                 #Si la sincronización trajo una carpeta vacía, no romperá el script
                 cambiar_propietario_contenido "$DIRLAMP/sites-available" "$USER:$USER"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio de configuración de sitios de apache.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio de configuración de sitios de apache.${NC}" 
+                #rc=1
             fi
 
             if [[ -d "/home/sql/" ]]; then
@@ -1577,58 +1592,58 @@ backup_LAMP(){
                 #sudo chown -vR "$USER":"$USER" "$DIRLAMP/sql/"* 2>&1 | tee -a "$logfile" || true
                 cambiar_propietario_contenido "$DIRLAMP/sql" "$USER:$USER"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio del usuario sql.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio del usuario sql.${NC}" 
+                #rc=1
             fi
 
             # ZendFramework puede venir con patrón; usar find para seleccionar
             zend_src=$(find /var/lib -maxdepth 1 -type d -name 'ZendFramework*' | sort | head -n 1)
             if [[ -n "$zend_src" ]]; then
-                mkdir -p "$DIRLAMP"
-                do_rsync "$sudo_ok" "$zend_src" "$DIRLAMP" "ZendFramework"
+                mkdir -p "$DIRLAMP/ZendFramework"
+                do_rsync "$sudo_ok" "$zend_src" "$DIRLAMP/ZendFramework" "ZendFramework"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio de ZendFramework.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio de ZendFramework.${NC}" 
+                #rc=1
             fi
 
             if [[ -d "/home/$USER/Documentos/DAW2/" ]]; then
                 mkdir -p "$DIRLAMP/DAW2"
                 do_rsync "$sudo_ok" "/home/$USER/Documentos/DAW2" "$DIRLAMP/DAW2" "DAW2"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio de DAW2.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio de DAW2.${NC}" 
+                #rc=1
             fi
 
             if [[ -d "$dirorigen/" ]]; then
                 mkdir -p "$DIRLAMP/workspace"
                 do_rsync "no" "$dirorigen" "$DIRLAMP/workspace" "workspace"
             else
-                echo -e "${ROJO}[ERROR]: No existe el directorio workspace.${NC}" | tee -a "$logfile"
-                rc=1
+                log "${ROJO}[ERROR]: No existe el directorio workspace.${NC}" 
+                #rc=1
             fi
 
             # eliminar cache de forma segura (comprobar existencia)
             cache_file="$DIRLAMP/workspace/$USER/data/cache/module-config-cache.application.config.cache.php"
             if [[ -f "$cache_file" ]]; then
-                rm -f "$cache_file" 2>>"$logfile" || echo "[WARN] No se pudo eliminar cache" | tee -a "$logfile"
+                rm -f "$cache_file" 2>>"$logfile" || log "[WARN] No se pudo eliminar cache" 
             fi
 
-            echo 'Revisar espacio en disco' | tee -a "$logfile"
+            log 'Revisar espacio en disco' 
             #df -TBG "$DIRECTORIO" | tee -a "$logfile"
             mostrar_info_fs "$DIRECTORIO" "$logfile"
-            echo 'Revisar espacio de backupLAMP' | tee -a "$logfile"
+            log 'Revisar espacio de backupLAMP' 
             #sudo du -s -BG "$DIRLAMP" 2>&1 | tee -a "$logfile"
             mostrar_tamano_dir_log "$DIRLAMP" "$logfile"
         else
-            echo -e "${ROJO}[ERROR]: Espacio insuficiente en ${DIRECTORIO}.${NC}" | tee -a "$logfile"
-            rc=1
+            log "${ROJO}[ERROR]: Espacio insuficiente en ${DIRECTORIO}.${NC}" 
+            #rc=1
         fi
     else
-        echo -e "${ROJO}[ERROR]: Disco ${DIRECTORIO} no montado o directorios incompatibles.${NC}" | tee -a "$logfile"
-        rc=1
+        log "${ROJO}[ERROR]: Disco ${DIRECTORIO} no montado o directorios incompatibles.${NC}" 
+        #rc=1
     fi
 
-    echo "##################################################FIN##################################################" | tee -a "$logfile"
+    log "##################################################FIN##################################################" 
     date | tee -a "$logfile"
     # end_time_LAMP=$(date +"%T")
     # start_seconds_LAMP=$(date -d "$start_time_LAMP" +%s)
@@ -1647,16 +1662,16 @@ backup_LAMP(){
     elapsed_minutes_LAMP=$(((datediff_LAMP % 3600)/60))
     elapsed_seconds_LAMP=$((datediff_LAMP % 60))
 
-    echo "HORA INICIO: $start_time_LAMP" | tee -a "$logfile"
-    echo "HORA FIN: $end_time_LAMP" | tee -a "$logfile"
-    echo "ELAPSED TIME: $elapsed_time_LAMP" | tee -a "$logfile"
-    echo "" | tee -a "$logfile"
-    echo "EL PROCESO DEMORO ${elapsed_hours_LAMP} HRS CON ${elapsed_minutes_LAMP} MINS Y ${elapsed_seconds_LAMP} SEGS EN EJECUTARSE." | tee -a "$logfile"
+    log "HORA INICIO: $start_time_LAMP" 
+    log "HORA FIN: $end_time_LAMP" 
+    log "ELAPSED TIME: $elapsed_time_LAMP" 
+    log "" 
+    log "EL PROCESO DEMORO ${elapsed_hours_LAMP} HRS CON ${elapsed_minutes_LAMP} MINS Y ${elapsed_seconds_LAMP} SEGS EN EJECUTARSE." 
 
     # opcion2=0
     # opcion3=0
     reiniciar_variables
-    echo "Respaldo del sistema LAMP completado." | tee -a "$logfile"
+    log "Respaldo del sistema LAMP completado." 
     echo -e "${NC}"
     return $rc
 }
@@ -1850,7 +1865,7 @@ restaurar_respaldo() {
 
     local start_timestamp
     start_timestamp=$(date '+%F %T')
-    echo "INICIO: $start_timestamp" | tee -a "$logfile"
+    log "INICIO: $start_timestamp" 
 
     local fs_dest
     #fs_dest=$(df -T "$restore_dest" | awk 'NR==2 {print $2}')
@@ -1861,8 +1876,8 @@ restaurar_respaldo() {
         rsync_opts=( -aHv --delete --numeric-ids --progress --no-perms --no-owner --no-group --chmod=ugo=rwX )
     fi
 
-    echo "Restaurando desde: $backup_src" | tee -a "$logfile"
-    echo "Destino: $restore_dest" | tee -a "$logfile"
+    log "Restaurando desde: $backup_src" 
+    log "Destino: $restore_dest" 
 
     if is_lamp_backup "$backup_src"; then
         restore_lamp "$backup_src" "$restore_dest" "$logfile"
@@ -1883,10 +1898,10 @@ restaurar_respaldo() {
     local elapsed_formatted
     elapsed_formatted=$(date -u -d "@$elapsed" +%H:%M:%S)
 
-    echo "FIN: $end_timestamp" | tee -a "$logfile"
-    echo "DURACION: $elapsed_formatted" | tee -a "$logfile"
-    echo "HORA INICIO: $start_timestamp" | tee -a "$logfile"
-    echo "HORA FIN: $end_timestamp" | tee -a "$logfile"
+    log "FIN: $end_timestamp" 
+    log "DURACION: $elapsed_formatted" 
+    log "HORA INICIO: $start_timestamp" 
+    log "HORA FIN: $end_timestamp" 
 
     if [[ $rc -eq 0 ]]; then
         echo -e "${VERDE}Restauración completa.${NC}"
@@ -1907,10 +1922,10 @@ restore_lamp() {
     local logfile="$2"
     local rc=0
 
-    echo "Restauración especial LAMP desde $backup_src" | tee -a "$logfile"
+    log "Restauración especial LAMP desde $backup_src" 
 
     if [[ ! -d "$backup_src" ]]; then
-        echo -e "${ROJO}[ERROR]: El backup LAMP no existe: $backup_src${NC}" | tee -a "$logfile"
+        log "${ROJO}[ERROR]: El backup LAMP no existe: $backup_src${NC}" 
         return 1
     fi
 
@@ -1939,7 +1954,7 @@ restore_lamp() {
         local label="$3"
 
         if [[ -d "$src" && -n "$(find "$src" -mindepth 1 | head -n 1)" ]]; then
-            echo "Restaurando $label desde $src a $dst" | tee -a "$logfile"
+            log "Restaurando $label desde $src a $dst" 
             if [[ "$dst" == "$target_filezilla" || "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
                 #sudo rsync -aHv --delete "$src"/ "$dst" 2>&1 | tee -a "$logfile" || rc=1
                 sup="sudo"
@@ -1950,7 +1965,7 @@ restore_lamp() {
             do_rsync "$sup" "$src" "$dst" "$label" "$logfile" #modarr modexarr "$MI_PASSWORD"
             rc=$?
         else
-            echo -e "${ROJO}[ERROR]: No existe o está vacío el directorio de backup $label: $src${NC}" | tee -a "$logfile"
+            log "${ROJO}[ERROR]: No existe o está vacío el directorio de backup $label: $src${NC}" 
             rc=1
         fi
     }
@@ -1964,12 +1979,12 @@ restore_lamp() {
     local zend_src
     zend_src=$(find "$backup_src" -maxdepth 1 -type d -name 'ZendFramework*' | sort | head -n 1)
     if [[ -n "$zend_src" ]]; then
-        echo "Restaurando ZendFramework desde $zend_src a $target_zend" | tee -a "$logfile"
+        log "Restaurando ZendFramework desde $zend_src a $target_zend" 
         #sudo rsync -aHv --delete "$zend_src"/ "$target_zend" 2>&1 | tee -a "$logfile" || rc=1
         do_rsync "sudo" "$zend_src" "$target_zend" "ZendFramework" "$logfile" #modarr modexarr "$MI_PASSWORD"
         rc=$?
     else
-        echo -e "${ROJO}[ERROR]: No existe backup de ZendFramework en $backup_src${NC}" | tee -a "$logfile"
+        log "${ROJO}[ERROR]: No existe backup de ZendFramework en $backup_src${NC}" 
         rc=1
     fi
 
@@ -1977,13 +1992,14 @@ restore_lamp() {
         echo -e "${ROJO}[ERROR] No es posible importar las bases de datos porque falta instalar mysql.${NC}"
     else
         if [[ -d "$backup_src/sql" && -n "$(find "$backup_src/sql" -maxdepth 1 -name '*.sql' -print -quit)" ]]; then
-            echo "Se han encontrado dumps SQL en $backup_src/sql" | tee -a "$logfile"
+            log "Se han encontrado dumps SQL en $backup_src/sql" 
             read -rp "${AMARILLO}¿Importar los dumps SQL a MySQL ahora? (s/N): ${NC}" import_sql
             import_sql=${import_sql:-n}
             if [[ "$import_sql" =~ ^[sS]$ ]]; then
                 read -rp "${AMARILLO}Usuario MySQL [root]: ${NC}" MYSQL_USER
                 MYSQL_USER=${MYSQL_USER:-root}
                 read -s -rp "${AMARILLO}Contraseña MySQL: ${NC}" MYSQL_PASS
+                MYSQL_PASS=${MYSQL_PASS:-admin}
                 echo
                 read -rp "${AMARILLO}Host MySQL [localhost]: ${NC}" MYSQL_HOST
                 MYSQL_HOST=${MYSQL_HOST:-localhost}
@@ -2000,19 +2016,19 @@ restore_lamp() {
                     [[ -f "$sql" ]] || continue
                     local dbname
                     dbname=$(basename "$sql" .sql)
-                    echo "Importando $sql en la base $dbname" | tee -a "$logfile"
+                    log "Importando $sql en la base $dbname" 
                     if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-                        echo "[DRY-RUN] mysql -h $MYSQL_HOST -u $MYSQL_USER $dbname < $sql" | tee -a "$logfile"
-                        echo "[DRY-RUN] Validando conexión MySQL..." | tee -a "$logfile"
+                        log "[DRY-RUN] mysql -h $MYSQL_HOST -u $MYSQL_USER $dbname < $sql" 
+                        log "[DRY-RUN] Validando conexión MySQL..." 
                         if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e 'SELECT 1;' 2>>"$logfile"; then
-                            echo -e "${ROJO}[ERROR]: No se pudo conectar a MySQL.${NC}" | tee -a "$logfile"
+                            log -e "${ROJO}[ERROR]: No se pudo conectar a MySQL.${NC}" 
                             rc=1
                         else
-                            echo "[DRY-RUN] Conexión OK, importación simulada." | tee -a "$logfile"
+                            log "[DRY-RUN] Conexión OK, importación simulada." 
                         fi
                     else
                         if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>&1 | tee -a "$logfile"; then
-                            echo -e "${ROJO}[ERROR]: Falló la importación de $sql${NC}" | tee -a "$logfile"
+                            log -e "${ROJO}[ERROR]: Falló la importación de $sql${NC}" 
                             rc=1
                         fi
                     fi
@@ -2023,9 +2039,9 @@ restore_lamp() {
     fi
 
     if [[ "$rc" -eq 0 ]]; then
-        echo -e "${VERDE}Restore LAMP completado sin errores.${NC}" | tee -a "$logfile"
+        log "${VERDE}Restore LAMP completado sin errores.${NC}" 
     else
-        echo -e "${ROJO}Restore LAMP finalizado con errores. Revisa el log: $logfile${NC}" | tee -a "$logfile"
+        log "${ROJO}Restore LAMP finalizado con errores. Revisa el log: $logfile${NC}" 
     fi
     # opcion2=0
     # opcion3=0
