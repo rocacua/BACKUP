@@ -1,0 +1,2151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ # !/bin/bash
+start_time=`date +"%T"`
+date
+echo "##################################################INI##################################################"
+clear
+# ==============================
+#CONSTANTES
+# ==============================
+declare -r DIR_ACTUAL=$(pwd)
+declare -r DIR_SCRIPT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+declare -r DIR_USUARIO=$(eval echo ~$USER)
+declare -r EQUIPO=$(hostname)
+declare -r USUARIO="$USER"
+declare -r FECHA=$(date +%Y-%m-%d)
+
+# ==============================
+#Variables globales
+# ==============================
+opcion=-1 # opción inicializada a -1
+opcion2=-1
+opcion3=-1
+nom_origen=""
+dirorigen=$DIR_USUARIO
+dirdestino=$DIR_SCRIPT
+dirsincompatibles=0
+formato_origen=""
+formato_destino=""
+espacio_origen_bytes=0
+espacio_destino_bytes=0
+espacio_origen=""
+espacio_destino=""
+sinespacio=0
+formatoinadecuado=0
+permisosincorrectos=0
+superuser='n'
+confirmacion='n'
+fecha=$(date +%Y-%m-%d_%H-%M-%S)
+logfile="$DIR_SCRIPT/BACKUP-${fecha}.log"
+prueba_rsync=""
+# Definir variables de color
+ROJO=$'\e[31m'
+VERDE=$'\e[32m'
+AZUL=$'\e[34m'
+CIAN=$'\e[36m'
+AMARILLO=$'\e[33m'
+NC=$'\e[0m' # Restablecer color
+# Versiones en negrita (opcional, para mayor claridad)
+ROJO_B=$'\e[1;31m'
+VERDE_B=$'\e[1;32m'
+CIAN_B=$'\e[1;36m'
+AMARILLO_B=$'\e[1;33m'
+
+
+# ==============================
+# UTILIDADES
+# ==============================
+# ini reiniciar_variables
+reiniciar_variables() {
+    opcion=-1 # opción inicializada a -1
+    opcion2=-1
+    opcion3=-1
+    nom_origen=""
+    dirorigen=$DIR_USUARIO
+    dirdestino=$DIR_SCRIPT
+    dirsincompatibles=0
+    formato_origen=""
+    formato_destino=""
+    espacio_origen_bytes=0
+    espacio_destino_bytes=0
+    espacio_origen=""
+    espacio_destino=""
+    sinespacio=0
+    formatoinadecuado=0
+    permisosincorrectos=0
+    superuser='n'
+    confirmacion='n'
+    fecha=$(date +%Y-%m-%d_%H-%M-%S)
+    logfile="$DIR_SCRIPT/BACKUP-${fecha}.log"
+    #prueba_rsync=""
+}
+# fin reiniciar_variables
+# ==============================
+# ini terminar_con_error
+# --- 1. FUNCIÓN CENTRALIZADA DE LIMPIEZA Y SALIDA ---
+terminar_con_error() {
+    local mensaje="${1:-"Se ha producido un error crítico inesperado."}"
+    local codigo_salida="${2:-1}"
+
+    echo "" >&2
+    echo -e "${ROJO}[ERROR CRÍTICO]: $mensaje${NC}" | tee -a "$logfile"
+    
+    # === LÓGICA DE LIMPIEZA GENERAL ===
+    echo "[*] Ejecutando limpieza antes de salir..." | tee -a "$logfile"
+    # Ejemplo: rm -rf "$DIR_TEMPORAL"
+    reiniciar_variables
+    
+    echo "[-] Script abortado correctamente." | tee -a "$logfile"
+    if [[ -t 0 ]]; then
+        read -p "${AMARILLO}Pulse una tecla para salir...${NC}"
+    fi
+    exit "$codigo_salida"
+}
+# --- 2. REGISTRAR UN TRAP DE EMERGENCIA (OPCIONAL PERO RECOMENDADO) ---
+# Si cualquier comando imprevisto falla y activa el 'set -e', este trap 
+# interceptará el fallo y llamará a nuestra función en lugar de morir abruptamente.
+trap 'terminar_con_error "El script falló inesperadamente en la línea $LINENO." $?' ERR
+# fin terminar_con_error
+# ==============================
+# ini validar_herramientas
+validar_herramientas() {
+    #Detecta plataforma
+    osname=$(uname -s)
+    echo "Plataforma $osname"
+    case "$osname" in
+    Linux)   is_linux=1 ;;
+    Darwin)  is_darwin=1 ;;
+    FreeBSD) is_bsd=1 ;;
+    *)       is_other=1 ;;
+    esac
+    #Validar herramientas
+    command -v rsync >/dev/null || { echo -e "${ROJO}rsync no instalado${NC}"; terminar_con_error; }
+    #command -v mysql >/dev/null || { echo -e "${ROJO}mysql no instalado${NC}"; terminar_con_error; }
+    #command -v mysqldump >/dev/null || { echo -e "${ROJO}mysqldump no instalado${NC}"; terminar_con_error; }
+    command -v du >/dev/null || { echo -e "${ROJO}du no instalado${NC}"; terminar_con_error; }
+    command -v df >/dev/null || { echo -e "${ROJO}df no instalado${NC}"; terminar_con_error; }
+}
+# fin validar_herramientas
+# ==============================
+# ini set_logfile
+set_logfile() {
+    local nom="${1:-"BACKUP"}"
+    local dir="${2:-"$DIR_SCRIPT"}"
+    fecha=$(date +%Y-%m-%d_%H-%M-%S)
+    logfile="${dir}/logs/${nom}-${fecha}.log"
+    #mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
+    
+    if [[ ! -d "$logfile" ]]; then
+        mkdir -p "$(dirname "$logfile")" || { echo "Error creando log"; return 1; }
+    fi
+    echo "[REGISTRO]: $logfile [$fecha]"
+}
+# fin set_logfile
+# ==============================
+# ini garantizar_sudo
+# FUNCIÓN: Asegura que el acceso sudo esté activo sin pedir contraseñas duplicadas
+garantizar_sudo() {
+    # Verificar si ya tenemos permisos sudo activos en esta sesión
+    if sudo -n true 2>/dev/null; then
+        # El ticket está activo, extendemos su duración por si acaso y salimos de la función
+        sudo -v
+        return 0
+    else
+        if [[ -t 0 ]]; then
+            # Si llegamos aquí, el ticket expiró o no existe. Solicitamos la contraseña.
+            echo -e "${AMARILLO}[!] Se requieren privilegios de administrador para continuar."
+            echo -ne "Introduce la contraseña de sudo: ${NC}"
+            read -s MI_PASSWORD
+            echo "" # Salto de línea
+
+            # Validar la contraseña introducida
+            if ! echo "$SUDO_PASS" | sudo -S -v &> /dev/null; then
+                echo -e "${ROJO}[-] Error: Contraseña incorrecta o permisos insuficientes.${NC}" >&2
+                unset MI_PASSWORD
+                #exit 1
+                terminar_con_error
+            fi
+
+            # Destruir la variable inmediatamente tras validar con éxito
+            unset MI_PASSWORD
+            echo -e "${VERDE}[+] Acceso concedido.${NC}"
+        else
+            echo -e "${ROJO}[-] Error: Necesario sudo pero no hay TTY (modo no interactivo)${NC}" >&2
+            terminar_con_error "sudo requerido en modo no interactivo" 2
+        fi    
+
+    fi
+}
+# fin garantizar_sudo
+# ==============================
+# --- FUNCIONES DE COMPROBACIÓN Y REEMPLAZO ---
+# ini parsear_ruta_remota
+# Función auxiliar para separar el host y la ruta remota
+# Transforma "user@ip:/path" en "user@ip" y "/path"
+parsear_ruta_remota() {
+    local entrada="$1"
+    host_remoto="${entrada%%:*}"
+    ruta_remota="${entrada#*:}"
+}
+# fin obtener_tipo_fs
+# ==============================
+# ini obtener_tipo_fs
+# Obtener el tipo de sistema de archivos (Reemplaza a: df -T / df -TBG)
+obtener_tipo_fs() {
+    local ruta="$1"
+    if is_remote_url "$ruta"; then
+        parsear_ruta_remota "$ruta"
+        # Ejecuta el comando en el servidor remoto vía SSH
+        if ssh -q "$host_remoto" "command -v df" &> /dev/null; then
+            ssh "$host_remoto" "df -T '$ruta_remota'" | awk 'NR==2 {print $2}'
+        elif ssh -q "$host_remoto" "command -v findmnt" &> /dev/null; then
+            ssh "$host_remoto" "findmnt -n -o FSTYPE --target '$ruta_remota'"
+        elif ssh -q "$host_remoto" "command -v stat" &> /dev/null; then
+            ssh "$host_remoto" "stat -f -c '%T' '$ruta_remota'"
+        else
+            echo "unknown"
+        fi
+    else
+        if command -v df &> /dev/null; then
+            df -T "$ruta" | awk 'NR==2 {print $2}'
+        elif command -v findmnt &> /dev/null; then
+            findmnt -n -o FSTYPE --target "$ruta"
+        elif command -v stat &> /dev/null; then
+            stat -f -c '%T' "$ruta"
+        else
+            echo "unknown"
+        fi
+    fi
+}
+# fin obtener_tipo_fs
+# ==============================
+# ini obtener_espacio_libre_bytes
+# Obtener el espacio disponible en bytes (Reemplaza a: df --output=avail -B1)
+obtener_espacio_libre_bytes() {
+    local ruta="$1"
+    if is_remote_url "$ruta"; then
+        parsear_ruta_remota "$ruta"
+        if ssh -q "$host_remoto" "command -v df" &> /dev/null; then
+            ssh "$host_remoto" "df --output=avail -B1 '$ruta_remota'" | tail -n 1 | tr -d '[:space:]'
+        elif ssh -q "$host_remoto" "command -v stat" &> /dev/null; then
+            ssh "$host_remoto" "stat -f -c '%S %a' '$ruta_remota'" | awk '{print $1 * $2}'
+        else
+            echo "0"
+        fi
+    else
+        if command -v df &> /dev/null; then
+            df --output=avail -B1 "$ruta" | tail -n 1 | tr -d '[:space:]'
+        elif command -v stat &> /dev/null; then
+            # stat da: tamaño de bloque * bloques libres para usuarios no raíz
+            stat -f -c '%S %a' "$ruta" | awk '{print $1 * $2}'
+        else
+            echo "0"
+        fi
+    fi
+}
+# fin obtener_espacio_libre_bytes
+# ==============================
+# ini obtener_espacio_libre_gb
+# Obtener el espacio disponible en Gigabytes (Reemplaza a: df --output=avail -BG)
+obtener_espacio_libre_gb() {
+    local ruta="$1"
+    if command -v df &> /dev/null; then
+        df --output=avail -BG "$ruta" | tail -n 1 | tr -d '[:space:]' | tr -d 'G'
+    else
+        # Si no hay df, calculamos los GB desde los bytes obtenidos con stat
+        local bytes
+        bytes=$(obtener_espacio_libre_bytes "$ruta")
+        awk -v b="$bytes" 'BEGIN {printf "%d", b / 1073741824}'
+    fi
+}
+# fin obtener_espacio_libre_gb
+# ==============================
+# ini obtener_tamano_dir_bytes
+# Obtener tamaño de un directorio en bytes (Reemplaza a: du -sb)
+obtener_tamano_dir_bytes() {
+    local ruta="$1"
+    if is_remote_url "$ruta"; then
+        parsear_ruta_remota "$ruta"
+        if ssh -q "$host_remoto" "command -v du" &> /dev/null; then
+            ssh "$host_remoto" "du -sb '$ruta_remota' 2>/dev/null" | awk '{print $1}'
+        elif ssh -q "$host_remoto" "command -v find && command -v stat" &> /dev/null; then
+            ssh "$host_remoto" "find '$ruta_remota' -type f -exec stat -c '%s' {} + 2>/dev/null" | awk '{s+=$1} END {print s+0}'
+        else
+            echo "0"
+        fi
+    else
+        if command -v du &> /dev/null; then
+            du -sb "$ruta" 2>/dev/null | awk '{print $1}'
+        elif command -v find &> /dev/null && command -v stat &> /dev/null; then
+            # Suma el tamaño de todos los archivos dentro del directorio
+            find "$ruta" -type f -exec stat -c '%s' {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'
+        else
+            echo "0"
+        fi
+    fi
+}
+# fin obtener_tamano_dir_bytes
+# ==============================
+# ini obtener_tamano_multiples_dir_gb
+# Obtener tamaño total de múltiples rutas en Gigabytes (Reemplaza a: du -csBG ... | awk '/total/')
+obtener_tamano_multiples_dir_gb() {
+    if command -v du &> /dev/null; then
+        du -csBG "$@" 2>/dev/null | awk '/total/ {print $1}' | tr -d 'G'
+    else
+        # Alternativa sumando bytes individuales de cada ruta dada
+        local total_bytes=0
+        for ruta in "$@"; do
+            if [ -e "$ruta" ]; then
+                local b
+                b=$(obtener_tamano_dir_bytes "$ruta")
+                total_bytes=$((total_bytes + b))
+            fi
+        done
+        awk -v b="$total_bytes" 'BEGIN {printf "%d", b / 1073741824}'
+    fi
+}
+# fin obtener_tamano_multiples_dir_gb
+# ==============================
+# ini mostrar_info_fs
+# Mostrar info general del sistema de archivos (Reemplaza a: df -TBG "$DIR" | tee -a)
+mostrar_info_fs() {
+    local ruta="$1"
+    local log="$2"
+    if command -v df &> /dev/null; then
+        df -TBG "$ruta" | tee -a "$log"
+    elif command -v findmnt &> /dev/null; then
+        echo -e "\n[INFO FS via findmnt]" | tee -a "$log"
+        findmnt -o SOURCE,FSTYPE,SIZE,USED,AVAIL,USE%,TARGET --target "$ruta" | tee -a "$log"
+    else
+        echo -e "\n[INFO FS] Tipo: $(obtener_tipo_fs "$ruta") | Libre: $(obtener_espacio_libre_gb "$ruta")GB" | tee -a "$log"
+    fi
+}
+# fin mostrar_info_fs
+# ==============================
+# ini mostrar_tamano_dir_log
+# Mostrar tamaño de un directorio en GB en el log (Reemplaza a: sudo du -s -BG)
+mostrar_tamano_dir_log() {
+    local ruta="$1"
+    local log="$2"
+    if command -v du &> /dev/null; then
+        sudo du -s -BG "$ruta" 2>&1 | tee -a "$log"
+    else
+        local gb
+        gb=$(obtener_tamano_multiples_dir_gb "$ruta")
+        echo "${gb}G    $ruta" | tee -a "$log"
+    fi
+}
+# fin mostrar_tamano_dir_log
+# ==============================
+# ini get_rsync_opts
+get_rsync_opts() {
+    local src=$1
+    local dst=$2
+    local outvar=$3
+
+    # Si origen o destino son remotos, elegir opciones conservadoras sin intentar df/realpath
+    if is_remote_url "$src" || is_remote_url "$dst"; then
+        eval "$outvar=( -aHv --delete --numeric-ids --progress )"
+        return 0
+    fi
+
+    local src_fs dst_fs
+
+    # src_fs=$(df -TBG "$src" | awk 'NR==2 {print $2}')
+    # dst_fs=$(df -TBG "$dst" | awk 'NR==2 {print $2}')
+    src_fs=$(obtener_tipo_fs "$src")
+    dst_fs=$(obtener_tipo_fs "$dst")
+
+    if is_posix_fs "$src_fs" && is_posix_fs "$dst_fs"; then
+        #eval "$outvar=( -aAXvh --delete --numeric-ids --progress )"
+        modarr=( -aAXvh --delete --numeric-ids --progress )
+    else
+        #eval "$outvar=( -aHv --delete --numeric-ids --progress --no-perms --no-owner --no-group --chmod=ugo=rwX )"
+        modarr=( -aHv --delete --numeric-ids --progress --no-perms --no-owner --no-group --chmod=ugo=rwX )
+    fi
+}
+# fin get_rsync_opts
+# ==============================
+# ini is_posix_fs
+# helpers
+is_posix_fs() {
+    case "$1" in
+        ext2|ext3|ext4|xfs|btrfs|f2fs|zfs|jfs) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+# fin is_posix_fs
+# ==============================
+# ini is_lamp_backup
+is_lamp_backup() {
+    local base
+    base=$(basename "$1")
+    [[ "$base" == LAMP || "$base" == LAMP-* ]]
+}
+# fin is_lamp_backup
+# ==============================
+# ini expand_path
+# Expande ~ y canonicaliza rutas locales; deja intactas las URLs/remotas (añadido soporte rclone-style)
+expand_path() {
+    local p="${1:-}"
+    [[ -z "$p" ]] && printf '%s\n' "$p" && return 0
+    # expandir tilde
+    p="${p/#\~/$HOME}"
+    # detectar URL (scheme://) o scp-like (user@host:/path) o UNC (//) o rclone-style (name:subpath)
+    if [[ "$p" =~ :// ]] || [[ "$p" =~ ^[^/]+@[^:]+: ]] || [[ "$p" =~ ^// ]] || [[ "$p" =~ ^[A-Za-z0-9._-]+:.+ ]]; then
+        printf '%s\n' "$p"
+    else
+        # usar realpath -m para no fallar si no existe; si no existe realpath -m, intenta realpath y cae al original
+        if realpath -m "$p" >/dev/null 2>&1; then
+            realpath -m "$p"
+        else
+            realpath "$p" 2>/dev/null || printf '%s\n' "$p"
+        fi
+    fi
+}
+# fin expand_path
+# ==============================
+# ini is_remote_url
+# Devuelve 0 si la ruta es remota/URL (http(s)://, scp-like, UNC, o rclone remote:subpath)
+is_remote_url() {
+    local u="${1:-}"
+    [[ -z "$u" ]] && return 1
+    if [[ "$u" =~ :// ]] || [[ "$u" =~ ^[^/]+@[^:]+: ]] || [[ "$u" =~ ^// ]] || [[ "$u" =~ ^[A-Za-z0-9._-]+:.+ ]]; then
+        return 0
+    fi
+    return 1
+}
+# fin is_remote_url
+# ==============================
+# ini sanitizar_nombre_directorio
+sanitizar_nombre_directorio() {
+    local entrada="$1"
+    local limpio
+    
+    # 1. Traducir caracteres específicos de forma manual (Ñ, ñ, Ç, ç)
+    limpio=$(echo "$entrada" | tr 'ÑñÇç' 'NnCc')
+    
+    # 2. Eliminar acentos y diéresis de forma automática convirtiendo a ASCII plano
+    #    //TRANSLIT le dice a iconv que busque el carácter más parecido (ej: á -> a)
+    limpio=$(echo "$limpio" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$limpio")
+    
+    # 3. Eliminar caracteres que SÍ son ilegales o peligrosos para las rutas
+    #    (Como /, \, *, ?, ", ', <, >, |, :, y espacios), reemplazándolos por guiones bajos
+    limpio=$(echo "$limpio" | sed 's/[^a-zA-Z0-9_-]/_/g')
+    
+    # 4. Limpieza estética: colapsar múltiples guiones bajos seguidos en uno solo
+    limpio=$(echo "$limpio" | sed 's/__*/_/g')
+    
+    # 5. Quitar guiones bajos sueltos en los extremos
+    limpio=${limpio#_}
+    limpio=${limpio%_}
+    
+    # 6. Quitar guiones medios sueltos en los extremos (todos los que haya)
+    limpio=$(echo "$limpio" | sed -e 's/^-*//' -e 's/-*$//')
+    
+    # Si la cadena queda vacía por seguridad, asignamos un nombre por defecto
+    if [[ -z "$limpio" ]]; then
+        limpio="desconocido"
+    fi
+    
+    echo "$limpio"
+}
+#Creo las variables por defecto para directorios
+equipo_sin_usuario="${EQUIPO//$USUARIO/}"
+equipo_limpio=$(sanitizar_nombre_directorio "$equipo_sin_usuario")
+usuario_limpio=$(sanitizar_nombre_directorio "$USUARIO")
+nom_pcu="${equipo_limpio:0:20}-${usuario_limpio:0:20}"
+# fin sanitizar_nombre_directorio
+# ==============================
+# ini explicar_error_rsync
+explicar_error_rsync() {
+    local rc="$1"
+    local mensaje=""
+
+    case "$rc" in
+        0)  mensaje="Sincronización completada con éxito." ;;
+        1)  mensaje="Error de sintaxis o uso incorrecto de los comandos." ;;
+        2)  mensaje="Incompatibilidad de protocolo entre las versiones de rsync." ;;
+        3)  mensaje="Error al seleccionar los archivos o directorios de origen/destino (¿Ruta inexistente?)." ;;
+        4)  mensaje="Acción solicitada no soportada (por ejemplo, archivos de 64-bits en plataformas de 32-bits)." ;;
+        5)  mensaje="Error al iniciar el protocolo cliente-servidor nativo de rsync." ;;
+        6)  mensaje="El demonio (daemon) de rsync no pudo escribir o añadir datos al archivo log." ;;
+        10) mensaje="Error grave en la entrada/salida de sockets (caída de red o problema SSH)." ;;
+        11) mensaje="Error grave de entrada/salida (I/O) en el sistema de archivos del disco." ;;
+        12) mensaje="Error en el flujo de datos del protocolo de comunicación de rsync." ;;
+        13) mensaje="Error con los diagnósticos internos del programa." ;;
+        14) mensaje="Error en el código de comunicación entre procesos (IPC)." ;;
+        20) mensaje="La transferencia fue interrumpida de forma manual (Señal SIGUSR1 o Ctrl+C)." ;;
+        21) mensaje="Error devuelto por una llamada interna del sistema operativo (waitpid)." ;;
+        22) mensaje="Error al asignar búferes de memoria RAM en el sistema." ;;
+        23) mensaje="Transferencia parcial debido a errores. Algunos archivos no pudieron copiarse (Revisa permisos de lectura/escritura)." ;;
+        24) mensaje="Transferencia parcial porque algunos archivos desaparecieron mientras se leían (Común en logs cambiantes)." ;;
+        25) mensaje="El límite establecido por '--max-delete' detuvo los borrados del destino." ;;
+        30) mensaje="Tiempo de espera agotado (Timeout) en el envío o recepción de datos." ;;
+        35) mensaje="Tiempo de espera agotado esperando la conexión con el demonio rsync." ;;
+        127) mensaje="El comando rsync no está instalado en el sistema o no se encuentra en el PATH." ;;
+        *)  mensaje="Código de error desconocido o fallo no documentado por rsync." ;;
+    esac
+
+    # Imprimir la alerta con color y guardarla en el log
+    if [ "$rc" -eq 0 ]; then
+        echo -e "${VERDE}[OK]: $mensaje${NC}" | tee -a "$logfile"
+    else
+        echo -e "${ROJO}[ERROR - Código $rc]: $mensaje${NC}" | tee -a "$logfile"
+    fi
+}
+# fin explicar_error_rsync
+# ==============================
+# ini cambiar_propietario_contenido
+cambiar_propietario_contenido() {
+    local directorio="$1"
+    local usuario_grupo="$2"
+    
+    # Guardar estado actual de nullglob y activarlo localmente
+    local nullglob_status
+    nullglob_status=$(shopt -p nullglob || true)
+    shopt -s nullglob
+
+    # Capturar los archivos en un array seguro
+    local archivos=("$directorio"/*)
+
+    # Restaurar el estado original de nullglob inmediatamente
+    eval "$nullglob_status"
+
+    # Si el array tiene elementos, ejecutamos el chown de forma segura
+    if [ ${#archivos[@]} -gt 0 ]; then
+        sudo chown -vR "$usuario_grupo" "${archivos[@]}" 2>&1 | tee -a "$logfile"
+        # Capturamos el PIPESTATUS del chown (no del tee)
+        return ${PIPESTATUS[0]}
+    fi
+
+    # Si está vacío, salimos con éxito silencioso (evita fallos)
+    return 0
+}
+# fin cambiar_propietario_contenido
+# ==============================
+# ini log
+log(){ printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*" | tee -a "$logfile"; }
+# fin log
+# ==============================
+# ini err
+err(){ log "ERROR: $*"; }
+# fin err
+# ==============================
+# ini do_rsync
+do_rsync() {
+    # echo "DEBUG: A punto de llamar a do_rsync con src='$backup_src' dst='$restore_dest'" | tee -a "$logfile"
+    # echo "DEBUG: env prueba_rsync='$prueba_rsync'" | tee -a "$logfile"
+    # set -x  # opcional, activa traza bash (quita después)
+
+    local use_sudo=${1:-}
+    shift 2>/dev/null || true
+    local src=${1:-}
+    shift 2>/dev/null || true
+    local dst=${1:-}
+    shift 2>/dev/null || true
+    local label=${1:-"rsync"}
+    shift 2>/dev/null || true
+    local logfile=${1:-"$DIR_SCRIPT/BACKUP.log"}
+    shift 2>/dev/null || true
+
+    # parámetros opcionales: nombre del array de opciones rsync, nombre del array exclude, password
+    local modarr_name=${1:-}
+    local modexclude_name=${2:-}
+    local password=${3:-}
+
+    if [[ -z "$modarr_name" ]]; then
+        get_rsync_opts "$src" "$dst" modarr
+        modarr_name=modarr
+    fi
+
+    if [[ -z "$modexclude_name" ]]; then
+        modexclude_name=modexclude_empty
+        modexclude_empty=()
+    fi
+
+    local modarr_ref
+    local modexclude_ref
+    eval "modarr_ref=( \"\${${modarr_name}[@]}\" )"
+    eval "modexclude_ref=( \"\${${modexclude_name}[@]}\" )"
+
+    if [[ -z "$prueba_rsync" ]]; then
+        echo -e "${AMARILLO} A continuación se pregunta si estas haciendo pruebas. Si respondes 'S' no se copiarán los archivos y solo realizará una simulación, esta configuración durará mientras se ejecute el programa, para cambiarla tienes que salir del programa y volver a ejecutarlo. ${NC}"
+        read -rp "${AMARILLO}Estas haciendo pruebas? [N/s]: ${NC}" prueba_rsync
+        prueba_rsync=${prueba_rsync:-n}
+    fi
+    # si son pruebas incluimos el modificador --dry-run para que simule y no haga cambios.
+    if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+        modarr_ref+=(--dry-run)
+    fi
+
+    local rsync_rc=0
+    local start_ts=$(date +%s)
+    local start_time=$(date '+%F %T')
+
+    src="${src%/}/"
+    dst="${dst%/}/"
+
+    echo "INICIO RSYNC ($label): $start_time" | tee -a "$logfile"
+    #echo "COMANDO: $( [[ "$use_sudo" =~ ^(yes|sudo)$ ]] && printf 'sudo ' )rsync ${modarr_ref[*]} ${modexclude_ref[*]} '$src' '$dst'" | tee -a "$logfile"
+    # limpiar dobles slashes y normalizar dst antes de parsear
+    dst="${dst%/}"
+    dst="${dst//\/\//\/}"
+
+    # si dst es scp-like, construir --rsync-path sobre la ruta completa que queremos crear
+    if [[ "$dst" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+        remote_host="${BASH_REMATCH[1]}"
+        remote_path="${BASH_REMATCH[2]}"
+        remote_path="${remote_path%/}"
+        # crear la ruta completa remota (no sólo el padre)
+        modarr_ref+=( "--rsync-path=$(printf "mkdir -p %q && rsync" "$remote_path")" )
+    fi
+
+    # ahora (re)construir el comando final para que incluya la opción añadida
+    if [[ "$use_sudo" = "sudo" ]]; then
+        cmd=( sudo rsync )
+    else
+        cmd=( rsync )
+    fi
+    cmd+=( "${modarr_ref[@]}" "${modexclude_ref[@]}" "$src" "$dst" )
+
+    echo "COMANDO: ${cmd[@]}" | tee -a "$logfile"
+    # local cmd=()
+    # if [[ "$use_sudo" = "sudo" ]]; then
+    #     cmd=( sudo rsync )
+    # else
+    #     cmd=( rsync )
+    # fi
+    # cmd+=( "${modarr_ref[@]}" "${modexclude_ref[@]}" "$src" "$dst" )
+
+    # echo "COMANDO: ${cmd[@]}" | tee -a "$logfile"
+
+
+    if [[ "$use_sudo" = "sudo" && -n "$password" ]]; then
+        # echo "$password" | "${cmd[@]}" 2>&1 | tee -a "$logfile"
+        # rsync_rc=${PIPESTATUS[1]}
+        garantizar_sudo
+        # "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+        # rsync_rc=${PIPESTATUS[0]} # PIPESTATUS[0] ahora es de 'sudo' (que envuelve a rsync)
+    #else
+        # "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+        # rsync_rc=${PIPESTATUS[0]}
+    fi
+
+    # detectar si alguno es URL con scheme no-ssh
+    if is_remote_url "$src" || is_remote_url "$dst"; then
+        # preferir rsync (ssh/scp) cuando el formato es user@host:/path o rsync://
+        if [[ "$src" =~ ^[^/]+@[^:]+: ]] || [[ "$dst" =~ ^[^/]+@[^:]+: ]] || [[ "$src" =~ ^rsync:// ]] || [[ "$dst" =~ ^rsync:// ]]; then
+            # usar rsync (como ahora)
+            "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+            rsync_rc=${PIPESTATUS[0]}
+        else
+            #Detectar si el origen es Google drive
+            # 1. Extraer el nombre del remoto (todo lo que está antes de los dos puntos)
+            remoto_nombre="${src%%:*}"
+            # 2. Inicializar la variable de modificadores vacía
+            modificadores_drive=""
+            # 3. Validar: ¿Tiene formato de rclone (alfanumérico) y NO es una ruta SSH (sin @)?
+            if [[ "$remoto_nombre" =~ ^[a-zA-Z0-9_-]+$ ]] && [[ "$remoto_nombre" != *.* ]]; then
+
+                # 4. Preguntar a rclone qué tipo de almacenamiento es ese remoto
+                # rclone listremotes --long devuelve líneas como: "drivero: drive" o "mi_dropbox: dropbox"
+                tipo_remoto=$(rclone listremotes --long 2>/dev/null | awk -v rem="${remoto_nombre}:" '$1 == rem {print $2}')
+
+                # 5. Si el tipo devuelto por rclone es exactamente "drive", aplicamos los modificadores
+                if [ "$tipo_remoto" = "drive" ]; then
+                    modificadores_drive="--drive-export-formats=docx,xlsx,pptx"
+                fi
+            fi
+            # fallback: usar rclone (instalar rclone previamente)
+            # rclone acepta ftp,sftp,http,webdav,s3,swift,smb,...
+            # ejemplo: rclone copy SRC DST --progress
+            if command -v rclone >/dev/null 2>&1; then
+                rclone copy "$src" "$dst" --progress --transfers=4 --log-file="$logfile" $modificadores_drive || rc=$?
+            else
+                echo "[ERROR] Ruta remota no soportada y rclone no instalado" | tee -a "$logfile"
+                rc=1
+            fi
+        fi
+    else
+        # local-to-local: usar rsync como ahora
+        "${cmd[@]}" 2>&1 | tee -a "$logfile" && true
+        rsync_rc=${PIPESTATUS[0]}
+    fi
+
+    local end_ts=$(date +%s)
+    local end_time=$(date '+%F %T')
+    local elapsed=$((end_ts - start_ts))
+    local elapsed_fmt=$(date -u -d "@$elapsed" +%H:%M:%S)
+
+    echo "FIN: $end_time" | tee -a "$logfile"
+    echo "DURACIÓN: $elapsed_fmt" | tee -a "$logfile"
+    echo "HORA INICIO: $start_time" | tee -a "$logfile"
+    echo "HORA FIN: $end_time" | tee -a "$logfile"
+    echo "" | tee -a "$logfile"
+
+    if [[ $rsync_rc -eq 0 ]]; then
+        echo -e "${VERDE}[OK][$label] Copia completada.${NC}" | tee -a "$logfile"
+    else
+        echo -e "${ROJO}[ERROR][$label] rsync devolvió $rsync_rc.${NC}" | tee -a "$logfile"
+        explicar_error_rsync "$rsync_rc"
+    fi
+
+    # set +x  # desactivar traza (si la activaste)
+    # echo "DEBUG: do_rsync returned rc=$?" | tee -a "$logfile"
+
+    return $rsync_rc
+}
+# fin do_rsync
+# ==============================
+# ini modo no interactivo
+# --------------------------
+# CLI / Modo no interactivo
+# --------------------------
+show_help() {
+  cat <<EOF
+Usage: $0 [--non-interactive|-n] --src|-s SRC --dst|-d DST [--dry-run|-r] [--help|-h]
+
+  --non-interactive, -n    Ejecuta sin interacción (útil para cron)
+  --src, -s SRC            Ruta origen (local, user@host:/path o rclone:remote:path)
+  --dst, -d DST            Ruta destino (local o user@host:/path)
+  --dry-run, -r            Simular la copia (rsync --dry-run)
+  --help, -h               Mostrar esta ayuda
+EOF
+}
+
+# Valores por defecto
+NON_INTERACTIVE=0
+DRY_RUN=0
+SRC=""
+DST=""
+
+# Parseo simple de longopts (no requiere getopt)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --non-interactive|-n) NON_INTERACTIVE=1; shift ;;
+    --src|-s) SRC="$2"; shift 2 ;;
+    --dst|-d) DST="$2"; shift 2 ;;
+    --dry-run|-r) DRY_RUN=1; shift ;;
+    --help|-h) show_help; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+# Función que ejecuta el backup sin interacción, construyendo el rsync y llamando a do_rsync.
+run_non_interactive() {
+  if [[ -z "$SRC" || -z "$DST" ]]; then
+    err "Modo no interactivo requiere --src y --dst"; return 2
+  fi
+
+  # Expandir orígenes locales; dejar remotos rclone/scp tal cual
+  ORIG_EXP=$(expand_path "$SRC")
+  if is_remote_url "$DST"; then
+    DST_EXP="$DST"
+  else
+    DST_EXP=$(expand_path "$DST")
+  fi
+
+  # Normalizar paths
+  ORIG="${ORIG_EXP%/}/"
+  # construir nombres seguros
+  nom_pc_seguro=$(sanitizar_nombre_directorio "$nom_pcu")
+  # nombre del respaldo: usar basename del origen si no hay nom_origen
+  tmpbase=$(basename "${ORIG_EXP%/}")
+  nom_or_seguro=$(sanitizar_nombre_directorio "${nom_origen:-$tmpbase}")
+  DEST="${DST_EXP%/}/$nom_pc_seguro/$nom_or_seguro/"
+  # Si destino es local, crear la ruta completa (evita errores de df/du sobre path inexistente)
+  if ! is_remote_url "$DST_EXP"; then
+    mkdir -p "$DEST" || { err "No se pudo crear destino local $DEST"; return 1; }
+  fi
+
+  # preparar exclusiones (igual que en respaldo)
+  if [ -f "$DIR_SCRIPT/exclude_list.txt" ]; then
+    nic_modexclude=( --exclude-from "$DIR_SCRIPT/exclude_list.txt" )
+  else
+    nic_modexclude=( --exclude '.*' --exclude '.cache/google-chrome' --exclude '.config/google-chrome' --exclude 'VirtualBox VMs/' )
+  fi
+
+  # preparar opciones rsync usando get_rsync_opts
+  get_rsync_opts "$ORIG" "$DEST" nic_modarr
+  # get_rsync_opts dejó el array en named var nic_modarr (por convención)
+  eval "nic_modarr=( \"\${nic_modarr[@]}\" )"
+
+  # añadir dry-run si lo piden
+  if [[ $DRY_RUN -eq 1 ]]; then
+    nic_modarr+=(--dry-run)
+  fi
+
+  # añadir --rsync-path si destino es scp-like (crear ruta remota)
+  if [[ "$DEST" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+    remote_path="${BASH_REMATCH[2]%/}"
+    nic_modarr+=( "--rsync-path=$(printf "mkdir -p %q && rsync" "$remote_path")" )
+  fi
+
+  # preparar logfile específico para esta ejecución
+  lnfecha=$(date +%Y-%m-%d_%H-%M-%S)
+  nic_log="$DIR_SCRIPT/logs/BACKUP-noninteractive-$lnfecha.log"
+  mkdir -p "$(dirname "$nic_log")" 2>/dev/null || true
+
+  # Llamada a do_rsync usando nombres de arrays (do_rsync soporta nombres)
+  do_rsync "" "$ORIG" "$DEST" "non-interactive" "$nic_log" nic_modarr nic_modexclude
+  return $?
+}
+
+# Si estamos en modo no interactivo, ejecutar y salir
+if [[ $NON_INTERACTIVE -eq 1 ]]; then
+  run_non_interactive
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    err "Ejecución no interactiva falló con código $rc"
+  fi
+  exit $rc
+fi
+# fin modo no interactivo
+# ==============================
+
+# ==============================
+# MENUS
+# ==============================
+#ini menú
+menu(){
+    clear
+    validar_herramientas
+    echo -e "${CIAN_B}=============================="
+    echo "Inicio: $start_time"
+    echo "Hola $USER, veo que estás en $DIR_ACTUAL."
+    echo "Bienbenid@s a nuestro Script de BACKUP."
+    echo "Selecciona una opción:"
+    echo "=============================="
+    echo "1. Crear/Actualizar respaldo"
+    echo "2. Restaurar respaldo"
+    echo -e "0. SALIR${NC}"
+    #read -p "Opción: ${NC}" opcion #leer por terminal la opción
+    echo -e -n "${AMARILLO}Opción [1,2,0]: ${NC}"
+    read -r opcion
+}
+# fin menú
+# ==============================
+#ini menú origen
+menu_origen(){
+    clear
+    echo -e "${CIAN_B}"
+    echo "=============================="
+    echo "BACKUP: Crear/Actualizar respaldo"
+    echo "=============================="
+    echo "¿De qué quieres hacer el respaldo?"
+    echo "1. Directorio actual: $DIR_ACTUAL"
+    echo "2. Directorio del script: $DIR_SCRIPT"
+    echo "3. Directorio del usuario: $DIR_USUARIO"
+    echo "4. Escribir ruta de directorio"
+    echo "5. Sistema LAMP (Directorio /workspace, Bases de datos MySQL, Configuración de Apache, Filezilla y ZendFramework)"
+    echo "0. VOLVER"
+    echo -e "${NC}"
+    #read -p "Opción [3 por defecto]: " opcion2
+    echo -e -n "${AMARILLO}Opción [3 por defecto]: ${NC}"
+    read -r opcion2
+    opcion2=${opcion2:-3}
+}
+# fin menú origen
+# ==============================
+#ini menú destino
+menu_destino(){
+    echo -e "${CIAN_B}"
+    echo "=============================="
+    echo "BACKUP: Crear/Actualizar respaldo"
+    echo "=============================="
+    echo "¿Donde guardar el respaldo?"
+    echo "1. Directorio actual: $DIR_ACTUAL"
+    echo "2. Directorio del script: $DIR_SCRIPT"
+    echo "3. Directorio del usuario: $DIR_USUARIO"
+    echo "4. Escribir ruta de directorio"
+    echo "0. VOLVER$"
+    echo -e "${NC}"
+    #read -p "Opción [2 por defecto]: " opcion3
+    echo -e -n "${AMARILLO}Opción [2 por defecto]: ${NC}"
+    read -r opcion3
+    opcion3=${opcion3:-2}
+}
+# fin menú destino
+# ==============================
+
+# ==============================
+# ACCIONES
+# ==============================
+# ini bucle respaldo
+bucle_respaldo(){
+    while [[ "$opcion3" != "0" ]]
+    do
+        #invocamos el menú de selección de destino
+        menu_destino
+        norespaldar=0
+        case $opcion3 in
+            1)
+                dirdestino=$DIR_ACTUAL
+                ;;
+            2)
+                dirdestino=$DIR_SCRIPT
+                ;;
+            3)
+                dirdestino=$DIR_USUARIO
+                ;;
+            4)
+                read -rp "${AMARILLO}Ingrese la ruta del directorio de destino: ${NC}" dirdestino
+                dirdestino=$(expand_path "$dirdestino")
+                ;;
+            0)
+                echo "Opción 0. Volver al menú principal"
+                break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+                ;;
+            *)
+                echo "Opción no válida"
+                ;;
+        esac
+        if [[ $norespaldar -eq 1 ]]; then
+            echo -e "${ROJO}[ERROR]: No se realizará el respaldo debido a errores de espacio, formato o permisos.${NC}"
+            #break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+        else
+            comprobaciones
+            respaldo
+            rc=$?
+            if [[ $rc -eq 0 ]]; then
+                #read -p "Pulse una tecla para volver al menú principal..."
+                break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+            fi
+        fi
+    done
+    read -p "${AMARILLO}Pulse una tecla para continuar...${NC}"
+}
+# fin bucle respaldo
+# ==============================
+#ini comprobaciones de espacio y formato de partición
+comprobaciones(){
+    echo -e "${CIAN_B}"
+    echo "=============================="
+    echo "Respaldo en directorio actual"
+    echo "=============================="
+    echo -e "${NC}"
+    #Revisar si el dirdestino es un directorio válido
+    local retorna=0
+    if [ "$opcion2" = "1" ]; then
+        echo "Respaldo del directorio actual"
+        diro=$(basename "$DIR_ACTUAL")
+        clean_dir="${diro%/}"
+        nom_origen="${clean_dir##*/}"
+    elif [ "$opcion2" = "2" ]; then
+        echo "Respaldo del directorio del script"
+        diro=$(basename "$DIR_SCRIPT")
+        clean_dir="${diro%/}"
+        nom_origen="${clean_dir##*/}"
+    elif [ "$opcion2" = "3" ]; then
+        echo "Respaldo del directorio del usuario"
+        nom_origen="$USUARIO"
+    elif [ "$opcion2" = "4" ]; then
+        echo "Respaldo de un directorio especificado por el usuario"
+        diro=$(basename "$dirorigen")
+        clean_dir="${diro%/}"
+        if is_remote_url "$dirorigen"; then
+            parsear_ruta_remota "$dirorigen"
+            echo "host_remoto=$host_remoto"
+            nom_host=$(sanitizar_nombre_directorio "$host_remoto")
+            echo "nom_host=$nom_host"
+            nom_host_recortado="${nom_host:${#nom_host}<20?0:${#nom_host}-20}"
+            echo "nom_host_recortado=$nom_host_recortado"
+            nom_origen="${nom_host_recortado}-${clean_dir##*/}"
+            #nom_origen="${nom_host: -20}-${clean_dir##*/}"
+            echo "nom_origen=$nom_origen"
+        else
+            nom_origen="${clean_dir##*/}"
+        fi
+    elif [ "$opcion2" = "5" ]; then
+        echo "Respaldo del sistema LAMP (Directorio /workspace, Bases de datos MySQL, Configuración de Apache, Filezilla y ZendFramework)"
+        nom_origen="LAMP"
+    else
+        echo "Opción de origen no válida"
+        nom_origen="Respaldo"
+    fi
+    echo "Nombre del respaldo: $nom_origen"
+    echo "Directorio de origen: $dirorigen"
+    echo "Directorio de destino: $dirdestino"
+    if is_remote_url "$dirdestino"; then 
+        #echo -e "${ROJO}[ERROR] El directorio de destino es remoto: $dirdestino ${NC}"
+        # dentro de la función comprobaciones, sustituir la rama remota por:
+        echo "Destino remoto detectado: $dirdestino"
+        # scp-like (user@host:/path) o rsync:// -> usar rsync/ssh
+        if [[ "$dirdestino" =~ ^[^/]+@[^:]+: ]] || [[ "$dirdestino" =~ ^rsync:// ]]; then
+            hostpart="${dirdestino%%:*}"
+            pathpart="${dirdestino#*:}"
+            echo "Comprobando acceso SSH/rsync a $hostpart..."
+            #if ssh -o BatchMode=yes -o ConnectTimeout=5 "$hostpart" "test -d '$pathpart' >/dev/null 2>&1"; then
+            if ssh -o BatchMode=no -o PreferredAuthentications=publickey,password -o ConnectTimeout=5 "$hostpart" "test -d '$pathpart' >/dev/null 2>&1"; then
+            #if ssh -o ConnectTimeout=5 "$hostpart" "test -d '$pathpart' >/dev/null 2>&1"; then
+                echo "Destino accesible por SSH."
+            else
+                echo "No se pudo verificar existencia remota; rsync intentará crear el destino si es necesario."
+            fi
+            sinespacio=0
+            formatoinadecuado=0
+            permisosincorrectos=0
+            return 0
+        else
+            # otros schemes -> rclone
+            if command -v rclone >/dev/null 2>&1; then
+                if rclone ls "$dirdestino" --max-age 1h >/dev/null 2>&1; then
+                    echo "Destino rclone accesible."
+                    sinespacio=0
+                    formatoinadecuado=0
+                    permisosincorrectos=0
+                    return 0
+                else
+                    echo "[ERROR] No se pudo listar el destino remoto con rclone."
+                    return 1
+                fi
+            else
+                echo "[ERROR] Ruta remota no soportada y rclone no instalado."
+                return 1
+            fi
+        fi
+        
+        #read -p "${AMARILLO}Pulse una tecla para continuar...${NC}"
+       return 1
+    elif [ -d "$dirdestino" ]; then
+    #if [ "$existe_dst" = "0" ]; then
+        # --- Manejo especial para origen remoto ---
+        if is_remote_url "$dirorigen"; then
+            if [[ "$dirorigen" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+                origin_host="${BASH_REMATCH[1]}"
+                origin_path="${BASH_REMATCH[2]%/}"
+            else
+                origin_host=""
+                origin_path="$dirorigen"
+            fi
+
+            echo "Origen remoto detectado: ${origin_host}:${origin_path}"
+            # Verificar existencia remota (permitir prompt de password si hace falta)
+            if [[ "$dirdestino" =~ ^[^/]+@[^:]+: ]] || [[ "$dirdestino" =~ ^rsync:// ]]; then
+                if ssh -o ConnectTimeout=5 "$origin_host" "test -d '$origin_path'" >/dev/null 2>&1; then
+                    echo "Origen remoto accesible."
+                else
+                    echo -e "${ROJO}[ERROR] No se pudo verificar existencia del origen remoto: $dirorigen ${NC}"
+                    return 1
+                fi
+            else
+                if command -v rclone >/dev/null 2>&1 && rclone lsf --max-depth 1 "$dirorigen" >/dev/null 2>&1; then
+                    echo "Origen remoto accesible mediante rclone."
+                else
+                    echo -e "${ROJO}[ERROR] No se pudo conectar o no existe el origen remoto con rclone: $dirorigen ${NC}"
+                    return 1
+                fi
+            fi
+            # Intentar obtener tamaño del origen remoto (opcional; no obligatorio)
+            if espacio_origen_bytes=$(ssh "$origin_host" "du -sb '$origin_path'" 2>/dev/null | awk '{print $1}'); then
+                espacio_origen=$(awk -v b="$espacio_origen_bytes" 'BEGIN {printf "%.3f", (b/1073741824)}')
+            else
+                espacio_origen_bytes=0
+                espacio_origen="0.000"
+            fi
+
+            # Marcar `dirorigenC` con el valor remoto para evitar realpath en rutas remotas
+            dirorigenC="$dirorigen"
+        else
+            dirorigenC=$(realpath "$dirorigen")
+        fi
+        #dirorigenC=$(realpath "$dirorigen")
+        dirdestinoC=$(realpath "$dirdestino")
+        if [ "$dirorigenC" == "$dirdestinoC" ]; then
+            echo -e "${ROJO}[ERROR]: El directorio de origen y destino no puede ser el mismo, para evitar bucles infinitos de copia.${NC}"
+            dirsincompatibles=1
+        elif [[ "$dirdestinoC" == "$dirorigenC/"* ]]; then
+            echo -e "${ROJO}[ERROR]: el destino no debe estar dentro del origen, para evitar bucles infinitos de copia.${NC}"
+            dirsincompatibles=1
+        fi
+        #Recojer datos de espacio y formato de partición
+        #formato_origen=$(df -TBG "$dirorigen" | awk 'NR==2 {print $2}')
+        formato_origen=$(obtener_tipo_fs "$dirorigen")
+        #espacio_origen_bytes=$(du -sb "$dirorigen" 2>/dev/null | awk '{print $1}')
+        espacio_origen_bytes=$(obtener_tamano_dir_bytes "$dirorigen")
+        espacio_origen=$(awk -v b="$espacio_origen_bytes" '
+            function ceil(x){ return (x==int(x)? x : int(x)+1) }
+            BEGIN {
+                v = b / 1073741824
+                v = ceil(v * 1000) / 1000
+                if (v == 0 && b > 0) v = 0.001
+                printf "%.3f", v
+            }')
+
+        #Recojer datos de espacio y formato de partición destino
+        #formato_destino=$(df -TBG "$dirdestino" | awk 'NR==2 {print $2}')
+        formato_destino=$(obtener_tipo_fs "$dirdestino")
+        #espacio_destino_bytes=$(df --output=avail -B1 "$dirdestino" | tail -n 1 | tr -d '[:space:]')
+        espacio_destino_bytes=$(obtener_espacio_libre_bytes "$dirdestino")
+        espacio_destino=$(awk -v b="$espacio_destino_bytes" '
+            function ceil(x){ return (x==int(x)? x : int(x)+1) }
+            BEGIN {
+                v = b / 1073741824
+                v = ceil(v * 1000) / 1000
+                if (v == 0 && b > 0) v = 0.001
+                printf "%.3f", v
+            }')
+        echo "Espacio ocupado del origen: ${espacio_origen} GB en partición: $formato_origen"
+        echo "Espacio disponible en destino: ${espacio_destino} GB en partición: $formato_destino"
+        echo "Comparación de bytes: ${espacio_destino_bytes} - ${espacio_origen_bytes} = $(echo "$espacio_destino_bytes - $espacio_origen_bytes" | bc) bytes quedarn disponibles."
+
+        #Comprobación de espacio
+        if [[ $espacio_origen_bytes -le $espacio_destino_bytes ]]; then
+            echo "Cabe en el destino"
+            sinespacio=0
+        else
+            echo "No cabe, elija otro destino"
+            sinespacio=1
+        fi
+        #Comprobación de formato de partición
+        # is_posix_fs() {
+        #     case "$1" in
+        #         ext2|ext3|ext4|xfs|btrfs|f2fs|zfs|jfs) return 0 ;;
+        #         *) return 1 ;;
+        #     esac
+        # }
+        if is_posix_fs "$formato_origen" && is_posix_fs "$formato_destino"; then
+            echo "Origen y destino son sistemas POSIX compatibles, se conservarán los permisos de archivos y directorios"
+            formatoinadecuado=0
+        else
+            echo "Destino no soporta permisos/propietarios completos, usar rsync sin metadatos POSIX, se recomienda usar particiones ext4"
+            formatoinadecuado=1
+        fi
+
+        #Comprovación de permisos de escritura en el destino
+        if [ -w "$dirdestino" ]; then
+            echo "Permisos de escritura en el destino: OK"
+            permisosincorrectos=0
+        else
+            echo "Permisos de escritura en el destino: NO OK"
+            echo "Se intentará usar sudo para el respaldo"
+            permisosincorrectos=1
+        fi
+        return $retorna
+    else
+        echo -e "${ROJO}[ERROR] No existe el directorio de destino: $dirdestino ${NC}"
+        return 1
+    fi
+}
+# fin comprobaciones
+# ==============================
+# ini respaldo
+respaldo(){
+    local sup=""
+    local comando="rsync"
+    local mod="-aAXvh --delete --numeric-ids --progress"
+    local excluir="s"
+    if [ -f "$DIR_SCRIPT/exclude_list.txt" ]; then
+        #local modexclude="--exclude-from='exclude_list.txt'"
+        #mapfile -t modexclude < <(sed 's/^/--exclude /' "$DIR_SCRIPT/exclude_list.txt")
+        modexclude=( --exclude-from "$DIR_SCRIPT/exclude_list.txt" )
+    else
+        #Por defecto se excluyen archivos sensibles de Google Chrome y VirtualBox, además de archivos ocultos
+        #local modexclude="--exclude '.*' --exclude '.cache/google-chrome' --exclude '.config/google-chrome' --exclude 'VirtualBox VMs/'"
+        modexclude=( --exclude '.*' --exclude '.cache/google-chrome' --exclude '.config/google-chrome' --exclude 'VirtualBox VMs/' )
+    fi
+    local origen="$dirorigen/"
+    local fecha=$(date +%Y-%m-%d_%H-%M-%S)
+    local nom_pc=$nom_pcu
+    local nom_or=${nom_origen:0:40}
+    local nom_pc_seguro=$(sanitizar_nombre_directorio "$nom_pc")
+    local nom_or_seguro=$(sanitizar_nombre_directorio "$nom_or")
+    # normalizar dirdestino sin tocar el prefijo user@host: (si es remoto)
+    if is_remote_url "$dirdestino" && [[ "$dirdestino" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+        hostpart="${BASH_REMATCH[1]}"
+        pathpart="${BASH_REMATCH[2]}"
+        # quitar slashes dobles y trailing slash
+        pathpart="${pathpart//\/\//\/}"
+        pathpart="${pathpart%/}"
+        dirdestino="${hostpart}:${pathpart}"
+    else
+        dirdestino=$(expand_path "$dirdestino")
+        dirdestino="${dirdestino%/}"
+    fi
+    # si es remoto, evita que quede "user@host:/.../user@host:..." (ya normalizado arriba)
+    local destino="$dirdestino/$nom_pc_seguro/$nom_or_seguro/"
+    #local estado=$1
+    local continua=0
+    if [[ $sinespacio -eq 0 && $dirsincompatibles -eq 0 && $formatoinadecuado -eq 0 ]]; then
+        echo "Se conservarán los permisos de archivos y directorios."
+        continua=1
+    elif [[ $sinespacio -eq 0 && $dirsincompatibles -eq 0 && $formatoinadecuado -eq 1 ]]; then
+        echo "No se conservarán los permisos de archivos y directorios."
+        continua=1
+        mod="-aHv --delete --numeric-ids --progress --no-perms --no-owner --no-group --chmod=ugo=rwX"
+    elif [[ $dirsincompatibles -eq 1 ]]; then
+        echo -e "${ROJO}[ERROR]: Directorios incompatibles.${NC}"
+        continua=0
+    else
+        echo -e "${ROJO}[ERROR]: No hay suficiente espacio.${NC}"
+        continua=0
+    fi
+    if is_remote_url "$dirdestino"; then 
+        echo "El destino es un directorio remoto"
+    elif [ ! -d "$dirdestino" ]; then
+        echo -e "${ROJO}[ERROR] No existe el directorio de destino: $dirdestino ${NC}"
+        continua=0
+    fi
+    if [[ $continua -eq 1 ]]; then
+        if [[ $permisosincorrectos -eq 1 ]]; then
+            echo "No se tienen permisos de escritura en el destino, se intentará usar sudo"
+            sup="sudo"
+        else
+            echo "Se tienen permisos de escritura en el destino"
+            read -rp "${AMARILLO}Deseas respaldar también archivos de otros usuarios? (s/N): ${NC}" superuser
+            superuser=${superuser:-n}
+            if [[ $superuser == "s" || $superuser == "S" ]]; then
+                sup="sudo"
+            fi
+        fi
+        if [[ $sup == "sudo" ]]; then
+
+            # # 1. Solicitar la contraseña de forma segura al inicio (ocultando los caracteres)
+            # read -sp "${AMARILLO}Introduce tu contraseña para sudo: ${NC}" MI_PASSWORD
+            # echo "" # Salto de línea necesario tras ocultar la entrada
+
+            # # 2. Validar que la contraseña introducida es correcta antes de continuar
+            # echo "$MI_PASSWORD" | sudo -S -v &>/dev/null
+            # if [ $? -ne 0 ]; then
+            #     echo -e "${ROJO}❌ Contraseña incorrecta. El script se va a cerrar.${NC}"
+            #     unset MI_PASSWORD # Destruir la variable por seguridad antes de salir
+            #     exit 1
+            # fi
+            # #ÉXITO: Destruir la variable de contraseña INMEDIATAMENTE de la memoria del script
+            # unset MI_PASSWORD
+            # echo "✅ Contraseña validada correctamente."
+            garantizar_sudo
+        fi
+
+        echo "Directorio de respaldo: $destino"
+        read -rp "${AMARILLO}Deseas un nombre diferente para organizar los archivos? (s/N): ${NC}" renombrardestino
+        renombrardestino=${renombrardestino:-n}
+        if [[ $renombrardestino == "s" || $renombrardestino == "S" ]]; then
+            read -rp "${AMARILLO}Ingrese el nombre del equipo (por defecto: $nom_pc): ${NC}" nom_pc
+            nom_pc=${nom_pc:-"$nom_pc"}
+            read -rp "${AMARILLO}Ingrese el nombre del respaldo (por defecto: $nom_or): ${NC}" nom_origen
+            nom_or=${nom_origen:-"$nom_or"}
+            nom_pc_seguro=$(sanitizar_nombre_directorio "$nom_pc")
+            nom_or_seguro=$(sanitizar_nombre_directorio "$nom_or")
+            destino="$dirdestino/$nom_pc_seguro/$nom_or_seguro/"
+        fi
+        echo "Directorio de respaldo: $destino"
+        read -rp "${AMARILLO}Deseas un respaldo incremental? (S/n): ${NC}" incremental
+        incremental=${incremental:-s}
+        if [[ $incremental == "n" || $incremental == "N" ]]; then
+            local destino="$dirdestino/$nom_pc/$nom_or-$fecha/"
+        fi
+        echo "Directorio de respaldo: $destino"
+        # Crear directorios de destino si no existen
+        if [ -d "$destino" ]; then
+            echo "El directorio $destino ya existe."
+        elif is_remote_url "$destino"; then
+            echo "El directorio $destino es remoto."
+        else
+            echo "El directorio $destino no existe. Creando directorio..."
+            $sup mkdir -p "$destino" || { echo -e "${ROJO}[ERROR]: No se pudo crear el directorio $destino${NC}"; return 1; }
+        fi
+
+        read -rp "${AMARILLO}Deseas excluir archivos sensibles? (S/n): ${NC}" excluir
+        excluir=${excluir:-s}
+        if [[ $excluir == "n" || $excluir == "N" ]]; then
+            modexclude=()
+        fi
+        echo "comando a ejecutar: $sup $comando $mod $modexclude '$origen' '$destino'"
+        read -rp "${AMARILLO}Deseas modificar las opciones de respaldo? (s/N): ${NC}" excluir
+        excluir=${excluir:-n}
+        if [[ $excluir == "s" || $excluir == "S" ]]; then
+            read -rp "${AMARILLO}Ingrese las opciones de respaldo (por defecto: -aAXvh --delete --numeric-ids --progress): ${NC}" mod
+            mod=${mod:-"-aAXvh --delete --numeric-ids --progress"}
+        fi
+        echo "comando a ejecutar: $sup $comando $mod $modexclude '$origen' '$destino'"
+        read -rp "${AMARILLO}Deseas iniciar el respaldo? (S/n): ${NC}" confirmacion
+        confirmacion=${confirmacion:-s}
+        if [[ $confirmacion == "s" || $confirmacion == "S" ]]; then
+            echo "Iniciando respaldo..."
+            #Calculo de tiempo de inicio
+            #start_time_rsync=`date +"%T"`
+
+            # Preparar log
+            # logfile="$DIR_SCRIPT/BACKUP-${fecha}.log"
+            # mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
+            # echo "Registro: $logfile"
+            set_logfile "BACKUP"
+
+            #COMANDO DE RESPALDO ($sup $comando $mod $modexclude '$origen' '$destino')
+            # COMANDO DE RESPALDO: construir array seguro y ejecutar
+            # Convertir las cadenas de opciones en arrays para evitar problemas de word-splitting
+            #read -r -a modarr <<< "$mod  --dry-run" #Prueva sin copiar archivos, para ver si hay errores de permisos o espacio
+            read -r -a modarr <<< "$mod" #Copiará los archivos
+            #read -r -a modexarr <<< "$modexclude"
+            local modexarr=( "${modexclude[@]}" )
+
+            do_rsync "$sup" "$origen" "$destino" "$nom_origen" "$logfile" modarr modexarr #"$MI_PASSWORD"
+            rc=$?
+            # cmd=()
+            # if [[ -n "$sup" ]]; then
+            #     #cmd+=( "$sup" "rsync" )
+            #     # rsync pasándole la contraseña por stdin
+            #     cmd=( "sudo" "-S" "/usr/bin/rsync" )
+            # else
+            #     cmd+=( "rsync" )
+            # fi
+            # cmd+=( "${modarr[@]}" "${modexclude[@]}" "$origen" "$destino" )
+
+            # # Mostrar comando (útil para depuración)
+            # echo "Ejecutando: ${cmd[*]}"
+
+            # Preparar log
+            # logfile="$DIR_SCRIPT/BACKUP-${fecha}.log"
+            # mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
+            # echo "Registro: $logfile"
+
+            # # Ejecutar rsync
+            # if [[ -n "$sup" ]]; then
+            #     # Ejecutar rsync con sudo y pasar la contraseña
+            #     echo "$MI_PASSWORD" | "${cmd[@]}" 2>&1 | tee -a "$logfile"
+            #     rsync_rc=${PIPESTATUS[1]} # Captura el código de salida de rsync, que es el segundo comando en la tubería
+            # else
+            #     "${cmd[@]}" 2>&1 | tee -a "$logfile"
+            #     rsync_rc=${PIPESTATUS[0]}
+            # fi
+            # #rsync_rc=$?
+
+            # if [[ $rsync_rc -ne 0 ]]; then
+            #     echo -e "${ROJO}rsync devolvió código $rsync_rc. Revise los errores anteriores.${NC}"
+            #     echo "rsync RC: $rsync_rc" | tee -a "$logfile"
+            # else
+            #     echo -e "${VERDE}rsync completado correctamente (código 0).${NC}"
+            # fi
+
+            # echo -e "${VERDE}"
+            # echo "Respaldo finalizado."
+
+            # #Calculo de tiempo de fin
+            # end_time_rsync=`date +"%T"`
+            # start_seconds_rsync=$(date -d "$start_time_rsync" +%s)
+            # end_seconds_rsync=$(date -d "$end_time_rsync" +%s)
+            # datediff_rsync=$((end_seconds_rsync - start_seconds_rsync))
+
+            # elapsed_time_rsync=$(date -d @$datediff_rsync -u +%H:%M:%S)
+            # elapsed_hours_rsync=$((datediff_rsync/3600))
+            # elapsed_minutes_rsync=$(((datediff_rsync % 3600)/60))
+            # elapsed_seconds_rsync=$((datediff_rsync % 60))
+            # opcion2=0
+            # opcion3=0
+            # echo "HORA INICIO: $start_time_rsync"
+            # echo "HORA FIN: $end_time_rsync"
+            # echo "ELAPSED TIME: $elapsed_time_rsync"
+            # echo ""
+            # echo "EL PROCESO DEMORO ${elapsed_hours_rsync} HRS CON ${elapsed_minutes_rsync} MINS Y ${elapsed_seconds_rsync} SEGS EN EJECUTARSE."
+            # echo -e "${NC}"
+            reiniciar_variables
+            echo -e -n "${AMARILLO}Pulse una tecla para volver al menú principal...${NC}"
+            read -r
+            return 0
+        else
+            echo "Respaldo cancelado."
+            echo -e -n "${AMARILLO}Pulse una tecla para volver al menú principal...${NC}"
+            read -r
+            return 0
+        fi
+    fi
+    return 1
+}
+# fin respaldo
+# ==============================
+# ini bucle_respaldo_LAMP
+bucle_respaldo_LAMP(){
+    while [[ "$opcion3" != "0" ]]
+    do
+        #invocamos el menú de selección de destino
+        menu_destino
+        norespaldar=0
+        case $opcion3 in
+            1)
+                dirdestino=$DIR_ACTUAL
+                ;;
+            2)
+                dirdestino=$DIR_SCRIPT
+                ;;
+            3)
+                dirdestino=$DIR_USUARIO
+                ;;
+            4)
+                read -rp "${AMARILLO}Ingrese la ruta del directorio de destino: ${NC}" dirdestino
+                dirdestino=$(expand_path "$dirdestino")
+                ;;
+            0)
+                echo "Opción 0. Volver al menú principal"
+                break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+                ;;
+            *)
+                echo "Opción no válida"
+                ;;
+        esac
+        if [[ $norespaldar -eq 1 ]]; then
+            echo -e "${ROJO}[ERROR]: No se realizará el respaldo debido a errores de espacio, formato o permisos.${NC}"
+            #break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+        else
+            backup_LAMP
+            rc=$?
+            if [[ $rc -eq 0 ]]; then
+                #read -p "Pulse una tecla para volver al menú principal..."
+                break 2   # sale de while opcion3 y while opcion2 y vuelve al while principal (donde se llama menu)
+            fi
+        fi
+    done
+    read -p "${AMARILLO}Pulse una tecla para continuar...${NC}"
+}
+# fin bucle_respaldo_LAMP
+# ==============================
+# ini backup_LAMP
+backup_LAMP(){
+
+    start_time_LAMP=$(date +"%T")
+    # fecha=$(date +%Y-%m-%d-%H-%M-%S)
+    # logfile="$DIR_SCRIPT/BACKUP-LAMP-${fecha}.log"
+    # mkdir -p "$(dirname "$logfile")"
+    set_logfile "BACKUP-LAMP"
+
+    echo "Iniciando respaldo del sistema LAMP..." | tee -a "$logfile"
+    nom_origen="LAMP"
+    local DIRECTORIO="$dirdestino"
+    local DIRLAMP="$dirdestino/$nom_pcu/$nom_origen"
+
+    # normalizar y comprobar rutas
+    dirsincompatibles=0
+    dirorigenC=$(realpath "$dirorigen")
+    dirdestinoC=$(realpath "$dirdestino")
+    if [[ "$dirorigenC" == "$dirdestinoC" ]]; then
+        echo -e "${ROJO}[ERROR]: El directorio de origen y destino no puede ser el mismo.${NC}" | tee -a "$logfile"
+        dirsincompatibles=1
+    elif [[ "$dirdestinoC" == "$dirorigenC/"* ]]; then
+        echo -e "${ROJO}[ERROR]: El destino no debe estar dentro del origen.${NC}" | tee -a "$logfile"
+        dirsincompatibles=1
+    fi
+
+    echo 'Espacio en disco' | tee -a "$logfile"
+    #df -TBG "$DIRECTORIO" | tee -a "$logfile"
+    mostrar_info_fs "$DIRECTORIO" "$logfile"
+    #LIBRE=$(df --output=avail -BG "$DIRECTORIO" | tail -n 1 | tr -d '[:space:]' | tr -d 'G')
+    LIBRE=$(obtener_espacio_libre_gb "$DIRECTORIO")
+    echo "${LIBRE} GB" | tee -a "$logfile"
+
+    garantizar_sudo
+    echo 'Espacio de workspace' | tee -a "$logfile"
+    #sudo du -s -BG "$dirorigen" 2>&1 | tee -a "$logfile"
+    mostrar_tamano_dir_log "$dirorigen" "$logfile"
+
+    echo 'Espacio de copia (estimado)' | tee -a "$logfile"
+    #TAM=$(du -csBG /home/"$USER"/.config/filezilla/ /etc/apache2/sites-available/ /home/sql/ /var/lib/ZendFramework* /home/"$USER"/workspace/ 2>/dev/null | awk '/total/ {print $1}' | tr -d 'G')
+    TAM=$(obtener_tamano_multiples_dir_gb /home/"$USER"/.config/filezilla/ /etc/apache2/sites-available/ /home/sql/ /var/lib/ZendFramework* /home/"$USER"/workspace/)
+    TAM=${TAM:-0}
+    echo "${TAM} GB " | tee -a "$logfile"
+
+    rc=0
+
+    if [[ -d "$DIRECTORIO" && $dirsincompatibles -eq 0 ]]; then
+        echo "Disco ${DIRECTORIO} montado" | tee -a "$logfile"
+
+        if (( LIBRE >= TAM )); then
+            echo "El directorio ${DIRECTORIO} tiene ${LIBRE} GB libres y la copia ${TAM} GB" | tee -a "$logfile"
+            mkdir -p "$DIRLAMP" || echo -e "${ROJO}[ERROR]: No se pudo crear $DIRLAMP${NC}" | tee -a "$logfile"
+
+            # antes de usar do_rsync, inicializar y validar sudo:
+            local rc=0
+            local sudo_ok=""
+            if sudo -n true 2>/dev/null; then
+                sudo_ok="sudo"
+            else
+                # pedir credenciales interactivas (si el usuario acepta) y validar
+                echo -n "${AMARILLO}Se requieren permisos sudo para algunos elementos. ¿Desea introducir su contraseña? (S/n): ${NC}"
+                read -r _want_sudo
+                _want_sudo=${_want_sudo:-S}
+                if [[ "$_want_sudo" =~ ^[sS]$ ]]; then
+                    if sudo -v 2>/dev/null; then
+                        sudo_ok="sudo"
+                    else
+                        echo -e "${ROJO}No se pudo validar sudo. Se intentará continuar sin sudo.${NC}" | tee -a "$logfile"
+                        sudo_ok=""
+                    fi
+                else
+                    echo "Continuando sin sudo; algunas operaciones que requieren privilegios fallarán." | tee -a "$logfile"
+                    sudo_ok=""
+                fi
+            fi
+
+            if [[ -z "$prueba_rsync" ]]; then
+                echo -e "${AMARILLO} A continuación se pregunta si etas haciendo pruebas. Si respondes 'S' no se copiarán los archivos y solo realizará una simulación, esta configuración durará mientras se ejecute el programa, para cambiarla tienes que salir del programa y volver a ejecutarlo. ${NC}"
+                read -rp "${AMARILLO}Estas haciendo pruebas? [N/s]: ${NC}" prueba_rsync
+                prueba_rsync=${prueba_rsync:-n}
+            fi
+
+            if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+                modarr_ref+=(--dry-run)
+            fi
+
+            # usar epoch timestamps para duración
+            local start_ts=$(date +%s)
+            start_time_LAMP=$(date '+%F %T')
+
+            if ! command -v mysql &> /dev/null || ! command -v mysqldump &> /dev/null; then
+                echo -e "${ROJO}[ERROR] No es posible respaldar las bases de datos porque falta instalar mysql o mysqldump.${NC}"
+            else
+                echo -e -n "${AMARILLO}Deseas respaldar MySQL? [S/n]: ${NC}"
+                read -r respaldarbd
+                respaldarbd=${respaldarbd:-S}
+                if [[ $respaldarbd == [Ss] ]]; then
+                    echo "Se realizará el respaldo de MySQL" | tee -a "$logfile"
+                    read -rp "${AMARILLO}Usuario de MySQL [admin]: ${NC}" MYSQL_USER
+                    MYSQL_USER=${MYSQL_USER:-admin}
+                    read -s -rp "${AMARILLO}Contraseña de MySQL [admin]: ${NC}" MYSQL_PASS
+                    echo
+                    read -rp "${AMARILLO}Host de MySQL [localhost]: ${NC}" MYSQL_HOST
+                    MYSQL_HOST=${MYSQL_HOST:-localhost}
+
+                    export MYSQL_PWD="$MYSQL_PASS"
+                    dbs=$(mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e "SHOW DATABASES;" -s --skip-column-names 2>>"$logfile" | grep -Ev '^(information_schema|performance_schema|mysql|sys)$' || true)
+                    unset MYSQL_PWD
+
+                    if [[ -z "$dbs" ]]; then
+                        echo -e "${ROJO}[WARN]: No se encontraron bases de datos para respaldar.${NC}" | tee -a "$logfile"
+                    else
+                        mkdir -p "$dirorigen/sql"
+                        for db in $dbs; do
+                            echo "Respaldando base de datos: $db" | tee -a "$logfile"
+                            if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+                                echo -e "SIMULACIÓN DE BACKUP MySQL" | tee -a "$logfile"
+                                echo "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER $db > $dirorigen/sql/$db.sql" | tee -a "$logfile"
+                                # Crear archivo simulado (vacío o con comentario)
+                                # echo "-- [DRY-RUN] Simulación de dump para $db" > "$dirorigen/sql/$db.sql.dryrun"
+                                #Usar mysqlcheck
+                                #mysqlcheck -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" 2>>"$logfile" || rc=1
+                                #Hacer dump a null
+                                echo "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER $db (sin guardar a archivo)" | tee -a "$logfile"
+                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" > /dev/null 2>>"$logfile"; then
+                                    echo -e "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" | tee -a "$logfile"
+                                    rc=1
+                                    continue
+                                fi
+                                echo "[DRY-RUN] Dump de $db validado correctamente (sin guardar)" | tee -a "$logfile"
+
+                                #echo "mysqldump -h ""$MYSQL_HOST"" -u ""$MYSQL_USER"" ""$db"" > ""$dirorigen/sql/$db.sql"" | tee -a "$logfile"
+                            else
+                                if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" > "$dirorigen/sql/$db.sql" 2>>"$logfile"; then
+                                    echo -e "${ROJO}[ERROR]: mysqldump fallo para $db${NC}" | tee -a "$logfile"
+                                    rc=1
+                                    continue
+                                fi
+                            fi
+                        done
+                    fi
+                else
+                    echo "No se realizará el respaldo de MySQL" | tee -a "$logfile"
+                fi
+            fi
+            
+            # Ahora copia cada componente, pero nunca sale si hay un error; marca rc=1 y continúa.
+            if [[ -d "/home/$USER/.config/filezilla/" ]]; then
+                mkdir -p "$DIRLAMP/filezilla"
+                do_rsync "$sudo_ok" "/home/$USER/.config/filezilla" "$DIRLAMP/filezilla" "filezilla"
+                #sudo chown -vR "$USER":"$USER" "$DIRLAMP/filezilla/"* 2>&1 | tee -a "$logfile" || true
+                #Evita el asterisco suelto y el '|| true'
+                cambiar_propietario_contenido "$DIRLAMP/filezilla" "$USER:$USER"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio de configuración de filezilla.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            if [[ -d "/etc/apache2/sites-available" ]]; then
+                mkdir -p "$DIRLAMP/sites-available"
+                do_rsync "$sudo_ok" "/etc/apache2/sites-available" "$DIRLAMP/sites-available" "apache-sites"
+                #sudo chown -vR "$USER":"$USER" "$DIRLAMP/sites-available/"* 2>&1 | tee -a "$logfile" || true
+                #Si la sincronización trajo una carpeta vacía, no romperá el script
+                cambiar_propietario_contenido "$DIRLAMP/sites-available" "$USER:$USER"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio de configuración de sitios de apache.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            if [[ -d "/home/sql/" ]]; then
+                mkdir -p "$DIRLAMP/sql"
+                do_rsync "$sudo_ok" "/home/sql" "$DIRLAMP/sql" "sql-files"
+                #sudo chown -vR "$USER":"$USER" "$DIRLAMP/sql/"* 2>&1 | tee -a "$logfile" || true
+                cambiar_propietario_contenido "$DIRLAMP/sql" "$USER:$USER"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio del usuario sql.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            # ZendFramework puede venir con patrón; usar find para seleccionar
+            zend_src=$(find /var/lib -maxdepth 1 -type d -name 'ZendFramework*' | sort | head -n 1)
+            if [[ -n "$zend_src" ]]; then
+                mkdir -p "$DIRLAMP"
+                do_rsync "$sudo_ok" "$zend_src" "$DIRLAMP" "ZendFramework"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio de ZendFramework.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            if [[ -d "/home/$USER/Documentos/DAW2/" ]]; then
+                mkdir -p "$DIRLAMP/DAW2"
+                do_rsync "$sudo_ok" "/home/$USER/Documentos/DAW2" "$DIRLAMP/DAW2" "DAW2"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio de DAW2.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            if [[ -d "$dirorigen/" ]]; then
+                mkdir -p "$DIRLAMP/workspace"
+                do_rsync "no" "$dirorigen" "$DIRLAMP/workspace" "workspace"
+            else
+                echo -e "${ROJO}[ERROR]: No existe el directorio workspace.${NC}" | tee -a "$logfile"
+                rc=1
+            fi
+
+            # eliminar cache de forma segura (comprobar existencia)
+            cache_file="$DIRLAMP/workspace/$USER/data/cache/module-config-cache.application.config.cache.php"
+            if [[ -f "$cache_file" ]]; then
+                rm -f "$cache_file" 2>>"$logfile" || echo "[WARN] No se pudo eliminar cache" | tee -a "$logfile"
+            fi
+
+            echo 'Revisar espacio en disco' | tee -a "$logfile"
+            #df -TBG "$DIRECTORIO" | tee -a "$logfile"
+            mostrar_info_fs "$DIRECTORIO" "$logfile"
+            echo 'Revisar espacio de backupLAMP' | tee -a "$logfile"
+            #sudo du -s -BG "$DIRLAMP" 2>&1 | tee -a "$logfile"
+            mostrar_tamano_dir_log "$DIRLAMP" "$logfile"
+        else
+            echo -e "${ROJO}[ERROR]: Espacio insuficiente en ${DIRECTORIO}.${NC}" | tee -a "$logfile"
+            rc=1
+        fi
+    else
+        echo -e "${ROJO}[ERROR]: Disco ${DIRECTORIO} no montado o directorios incompatibles.${NC}" | tee -a "$logfile"
+        rc=1
+    fi
+
+    echo "##################################################FIN##################################################" | tee -a "$logfile"
+    date | tee -a "$logfile"
+    # end_time_LAMP=$(date +"%T")
+    # start_seconds_LAMP=$(date -d "$start_time_LAMP" +%s)
+    # end_seconds_LAMP=$(date -d "$end_time_LAMP" +%s)
+    # datediff_LAMP=$((end_seconds_LAMP - start_seconds_LAMP))
+
+    # elapsed_time_LAMP=$(date -d @"$datediff_LAMP" -u +%H:%M:%S)
+    # elapsed_hours_LAMP=$((datediff_LAMP/3600))
+    # elapsed_minutes_LAMP=$(((datediff_LAMP % 3600)/60))
+    # elapsed_seconds_LAMP=$((datediff_LAMP % 60))
+    # al final calcular duración con epoch:
+    local end_ts=$(date +%s)
+    local datediff_LAMP=$((end_ts - start_ts))
+    elapsed_time_LAMP=$(date -u -d @"$datediff_LAMP" +%H:%M:%S)
+    elapsed_hours_LAMP=$((datediff_LAMP/3600))
+    elapsed_minutes_LAMP=$(((datediff_LAMP % 3600)/60))
+    elapsed_seconds_LAMP=$((datediff_LAMP % 60))
+
+    echo "HORA INICIO: $start_time_LAMP" | tee -a "$logfile"
+    echo "HORA FIN: $end_time_LAMP" | tee -a "$logfile"
+    echo "ELAPSED TIME: $elapsed_time_LAMP" | tee -a "$logfile"
+    echo "" | tee -a "$logfile"
+    echo "EL PROCESO DEMORO ${elapsed_hours_LAMP} HRS CON ${elapsed_minutes_LAMP} MINS Y ${elapsed_seconds_LAMP} SEGS EN EJECUTARSE." | tee -a "$logfile"
+
+    # opcion2=0
+    # opcion3=0
+    reiniciar_variables
+    echo "Respaldo del sistema LAMP completado." | tee -a "$logfile"
+    echo -e "${NC}"
+    return $rc
+}
+# fin backup_LAMP
+# ==============================
+# RESTAURAR RESPALDO
+# ==============================
+# ini select_backup_dir
+select_backup_dir() {
+    local root="$1"
+
+    if [[ ! -d "$root" ]]; then
+        echo -e "${ROJO}[ERROR]: No existe el directorio de backups: $root${NC}" >&2
+        return 1
+    fi
+
+    mapfile -t backups < <(find "$root" -mindepth 2 -maxdepth 4 -type d | sort)
+    if [[ ${#backups[@]} -eq 0 ]]; then
+        echo -e "${ROJO}[ERROR]: No se encontraron backups en $root.${NC}" >&2
+        return 1
+    fi
+
+    echo "Backups disponibles:" >&2
+    for i in "${!backups[@]}"; do
+        printf '%3d) %s\n' "$((i+1))" "${backups[i]}" >&2
+    done
+
+    PS3="Seleccione backup [1-${#backups[@]}] o $(( ${#backups[@]} + 1 )) para cancelar: "
+    exec 3>&1
+    { select selected_backup in "${backups[@]}" "Cancelar"; do
+        if [[ $REPLY -ge 1 && $REPLY -le ${#backups[@]} ]]; then
+            printf '%s\n' "$selected_backup" >&3
+            exec 3>&-
+            return 0
+        fi
+        if [[ $REPLY -eq $(( ${#backups[@]} + 1 )) ]]; then
+            exec 3>&-
+            return 1
+        fi
+        echo "Selección inválida." >&2
+    done; } 1>&2
+}
+# fin select_backup_dir
+# ==============================
+# ini restaurar_respaldo
+restaurar_respaldo() {
+    local backup_root="$DIR_SCRIPT"
+    local backup_src
+
+    if ! backup_src=$(select_backup_dir "$backup_root"); then
+        echo -e "${ROJO}[ERROR]: No hay backups para restaurar en $backup_root.${NC}"
+        read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+        return 0
+    fi
+
+    local restore_dest
+    read -rp "${AMARILLO}Destino de restauracion [por defecto: $DIR_ACTUAL]: ${NC}" restore_dest
+    restore_dest=${restore_dest:-$DIR_ACTUAL}
+    restore_dest=$(expand_path "$restore_dest")
+
+    # Normalize tilde expansion immediately (avoid realpath on unexpanded ~)
+    restore_dest="${restore_dest/#\~/$HOME}"
+
+    # Normalize backup_src now (it's chosen from select_backup_dir)
+    backup_src=$(realpath "$backup_src")
+
+    while true; do
+        # use default again if somehow empty
+        restore_dest=${restore_dest:-$DIR_ACTUAL}
+        # Expand any remaining env/relative parts using a temporary normalized path if possible
+        # But only call realpath after destination existence/creation checks to avoid errors
+        if [[ "$restore_dest" == "$backup_src" || "$restore_dest" == "$backup_src/"* ]]; then
+            echo -e "${ROJO}[ERROR]: El destino no puede ser igual al backup ni estar dentro del backup.${NC}"
+            read -rp "${AMARILLO}Introduce otro destino (o pulsa ENTER para cancelar): ${NC}" restore_dest
+            # empty input -> cancel and return to menu
+            if [[ -z "$restore_dest" ]]; then
+                read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+                return 0
+            fi
+            restore_dest="${restore_dest/#\~/$HOME}"
+            restore_dest=$(expand_path "$restore_dest")
+            continue
+        fi
+
+        if is_lamp_backup "$backup_src"; then
+            # LAMP: destination must already exist
+            if [[ ! -d "$restore_dest" ]]; then
+                echo -e "${ROJO}[ERROR]: Para backups LAMP el destino debe existir previamente: $restore_dest${NC}"
+                read -rp "${AMARILLO}Desea introducir otro destino? (S/n): ${NC}" tryagain
+                tryagain=${tryagain:-S}
+                if [[ "$tryagain" =~ ^[sS]$ ]]; then
+                    read -rp "${AMARILLO}Nuevo destino: ${NC}" restore_dest
+                    restore_dest="${restore_dest/#\~/$HOME}"
+                    restore_dest=$(expand_path "$restore_dest")
+                    continue
+                else
+                    read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+                    return 0
+                fi
+            fi
+        else
+            # Non-LAMP: allow creating destination
+            #if [[ ! -d "$restore_dest" ]]; then
+            if is_remote_url "$restore_dest"; then
+                # omitir comprobación -d para remotos (o comprobar con rclone ls si quieres)
+                existe_dst=0
+            else
+                if [ -d "$restore_dest" ]; then
+                    existe_dst=0
+                else
+                    existe_dst=1
+                fi
+            fi
+            if [[ "$existe_dst" == 1 ]]; then
+                read -rp "${AMARILLO}El destino '$restore_dest' no existe. ¿Crear? (s/N): ${NC}" crear
+                crear=${crear:-n}
+                if [[ "$crear" =~ ^[sS]$ ]]; then
+                    if ! mkdir -p "$restore_dest"; then
+                        echo -e "${ROJO}[ERROR]: Error creando destino: $restore_dest${NC}"
+                        read -rp "${AMARILLO}Introduzca otro destino o pulse ENTER para cancelar: ${NC}" restore_dest
+                        if [[ -z "$restore_dest" ]]; then
+                            read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+                            return 0
+                        fi
+                        restore_dest="${restore_dest/#\~/$HOME}"
+                        restore_dest=$(expand_path "$restore_dest")
+                        continue
+                    fi
+                else
+                    read -rp "${AMARILLO}Introduzca otro destino o pulse ENTER para cancelar: ${NC}" restore_dest
+                    if [[ -z "$restore_dest" ]]; then
+                        read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+                        return 0
+                    fi
+                    restore_dest="${restore_dest/#\~/$HOME}"
+                    restore_dest=$(expand_path "$restore_dest")
+                    continue
+                fi
+            fi
+        fi
+
+        # If we reach here, destination exists (either originally or we created it)
+        # Now safely canonicalize path
+        #restore_dest=$(realpath "$restore_dest")
+        restore_dest="${restore_dest/#\~/$HOME}"
+        # Si necesidad de forzar existencia para LAMP o crear para no-LAMP:
+        if is_lamp_backup "$backup_src"; then
+            if [[ ! -d "$restore_dest" ]]; then
+                echo "Para backups LAMP el destino debe existir"; # volver a pedir o abortar
+            fi
+        else
+            #if [[ ! -d "$restore_dest" ]]; then
+            if is_remote_url "$restore_dest"; then
+                # omitir comprobación -d para remotos (o comprobar con rclone ls si quieres)
+                existe_dst=0
+            else
+                if [ -d "$restore_dest" ]; then
+                    existe_dst=0
+                else
+                    existe_dst=1
+                fi
+            fi
+            if [[ "$existe_dst" == 1 ]]; then
+                read -rp "El destino '$restore_dest' no existe. ¿Crear? (s/N): " crear
+                crear=${crear:-n}
+                [[ "$crear" =~ ^[sS]$ ]] && mkdir -p "$restore_dest"
+            fi
+        fi
+        # ahora canonicalizar (ya existe o fue creado)
+        restore_dest=$(realpath "$restore_dest")
+
+        # Final safety check: still not inside backup
+        if [[ "$restore_dest" == "$backup_src" || "$restore_dest" == "$backup_src/"* ]]; then
+            echo -e "${ROJO}[ERROR]: El destino no puede ser igual al backup ni estar dentro del backup.${NC}"
+            read -rp "${AMARILLO}Introduce otro destino: ${NC}" restore_dest
+            restore_dest="${restore_dest/#\~/$HOME}"
+            restore_dest=$(expand_path "$restore_dest")
+            continue
+        fi
+
+        break
+    done
+
+    local fecha
+    # fecha=$(date +%Y-%m-%d-%H-%M-%S)
+    # local restore_log="$DIR_SCRIPT/RESTORE-${fecha}.log"
+    #mkdir -p "$(dirname "$restore_log")"
+
+    # (Opcional) keep the previous behavior but call after validation
+    set_logfile "RESTORE"
+
+    local start_timestamp
+    start_timestamp=$(date '+%F %T')
+    echo "INICIO: $start_timestamp" | tee -a "$logfile"
+
+    local fs_dest
+    #fs_dest=$(df -T "$restore_dest" | awk 'NR==2 {print $2}')
+    fs_dest=$(obtener_tipo_fs "$restore_dest")
+
+    local rsync_opts=( -aHv --delete --numeric-ids --progress )
+    if ! is_posix_fs "$fs_dest"; then
+        rsync_opts=( -aHv --delete --numeric-ids --progress --no-perms --no-owner --no-group --chmod=ugo=rwX )
+    fi
+
+    echo "Restaurando desde: $backup_src" | tee -a "$logfile"
+    echo "Destino: $restore_dest" | tee -a "$logfile"
+
+    if is_lamp_backup "$backup_src"; then
+        restore_lamp "$backup_src" "$restore_dest" "$logfile"
+        local rc=$?
+    else
+        local diro=$(basename "$restore_dest")
+        local clean_dir="${diro%/}"
+        local nom_des="${clean_dir##*/}"
+        do_rsync "" "$backup_src/" "$restore_dest/" "RESTORE-${fecha}-${nom_des}" "$logfile" rsync_opts
+        local rc=$?
+    fi
+
+    local end_timestamp
+    end_timestamp=$(date '+%F %T')
+
+    local elapsed
+    elapsed=$(( $(date -d "$end_timestamp" +%s) - $(date -d "$start_timestamp" +%s) ))
+    local elapsed_formatted
+    elapsed_formatted=$(date -u -d "@$elapsed" +%H:%M:%S)
+
+    echo "FIN: $end_timestamp" | tee -a "$logfile"
+    echo "DURACION: $elapsed_formatted" | tee -a "$logfile"
+    echo "HORA INICIO: $start_timestamp" | tee -a "$logfile"
+    echo "HORA FIN: $end_timestamp" | tee -a "$logfile"
+
+    if [[ $rc -eq 0 ]]; then
+        echo -e "${VERDE}Restauración completa.${NC}"
+    else
+        echo -e "${ROJO}Restauración finalizada con errores (rc=$rc). Revisa $logfile${NC}"
+    fi
+    # opcion2=0
+    # opcion3=0
+    reiniciar_variables
+    read -p "${AMARILLO}Pulse una tecla para volver al menú...${NC}"
+    return 0
+}
+# fin restaurar_respaldo
+# ==============================
+# ini restore_lamp
+restore_lamp() {
+    local backup_src="$1"
+    local logfile="$2"
+    local rc=0
+
+    echo "Restauración especial LAMP desde $backup_src" | tee -a "$logfile"
+
+    if [[ ! -d "$backup_src" ]]; then
+        echo -e "${ROJO}[ERROR]: El backup LAMP no existe: $backup_src${NC}" | tee -a "$logfile"
+        return 1
+    fi
+
+    local target_filezilla="$DIR_USUARIO/.config/filezilla/"
+    local target_sites="/etc/apache2/sites-available/"
+    local target_sql="/home/sql/"
+    local target_zend="/var/lib/ZendFramework/"
+    local target_daw="/home/$USER/Documentos/DAW2/"
+    local target_workspace="$DIR_USUARIO/workspace/"
+
+    mkdir -p "$target_filezilla" "$target_sql" "$target_daw" "$target_workspace"
+
+    if [[ -z "$prueba_rsync" ]]; then
+        echo -e "${AMARILLO} A continuación se pregunta si etas haciendo pruebas. Si respondes 'S' no se copiarán los archivos y solo realizará una simulación, esta configuración durará mientras se ejecute el programa, para cambiarla tienes que salir del programa y volver a ejecutarlo. ${NC}"
+        read -rp "${AMARILLO}Estas haciendo pruebas? [N/s]: ${NC}" prueba_rsync
+        prueba_rsync=${prueba_rsync:-n}
+    fi
+
+    if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+        modarr_ref+=(--dry-run)
+    fi
+
+    restore_path() {
+        local src="$1"
+        local dst="$2"
+        local label="$3"
+
+        if [[ -d "$src" && -n "$(find "$src" -mindepth 1 | head -n 1)" ]]; then
+            echo "Restaurando $label desde $src a $dst" | tee -a "$logfile"
+            if [[ "$dst" == "$target_filezilla" || "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
+                #sudo rsync -aHv --delete "$src"/ "$dst" 2>&1 | tee -a "$logfile" || rc=1
+                sup="sudo"
+            else
+                #rsync -aHv --delete "$src"/ "$dst" 2>&1 | tee -a "$logfile" || rc=1
+                sup=""
+            fi
+            do_rsync "$sup" "$src" "$dst" "$label" "$logfile" #modarr modexarr "$MI_PASSWORD"
+            rc=$?
+        else
+            echo -e "${ROJO}[ERROR]: No existe o está vacío el directorio de backup $label: $src${NC}" | tee -a "$logfile"
+            rc=1
+        fi
+    }
+
+    restore_path "$backup_src/filezilla" "$target_filezilla" "FileZilla"
+    restore_path "$backup_src/sites-available" "$target_sites" "Apache sites-available"
+    restore_path "$backup_src/sql" "$target_sql" "SQL dumps"
+    restore_path "$backup_src/DAW2" "$target_daw" "DAW2"
+    restore_path "$backup_src/workspace" "$target_workspace" "Workspace"
+
+    local zend_src
+    zend_src=$(find "$backup_src" -maxdepth 1 -type d -name 'ZendFramework*' | sort | head -n 1)
+    if [[ -n "$zend_src" ]]; then
+        echo "Restaurando ZendFramework desde $zend_src a $target_zend" | tee -a "$logfile"
+        #sudo rsync -aHv --delete "$zend_src"/ "$target_zend" 2>&1 | tee -a "$logfile" || rc=1
+        do_rsync "sudo" "$zend_src" "$target_zend" "ZendFramework" "$logfile" #modarr modexarr "$MI_PASSWORD"
+        rc=$?
+    else
+        echo -e "${ROJO}[ERROR]: No existe backup de ZendFramework en $backup_src${NC}" | tee -a "$logfile"
+        rc=1
+    fi
+
+    if ! command -v mysql &> /dev/null; then
+        echo -e "${ROJO}[ERROR] No es posible importar las bases de datos porque falta instalar mysql.${NC}"
+    else
+        if [[ -d "$backup_src/sql" && -n "$(find "$backup_src/sql" -maxdepth 1 -name '*.sql' -print -quit)" ]]; then
+            echo "Se han encontrado dumps SQL en $backup_src/sql" | tee -a "$logfile"
+            read -rp "${AMARILLO}¿Importar los dumps SQL a MySQL ahora? (s/N): ${NC}" import_sql
+            import_sql=${import_sql:-n}
+            if [[ "$import_sql" =~ ^[sS]$ ]]; then
+                read -rp "${AMARILLO}Usuario MySQL [root]: ${NC}" MYSQL_USER
+                MYSQL_USER=${MYSQL_USER:-root}
+                read -s -rp "${AMARILLO}Contraseña MySQL: ${NC}" MYSQL_PASS
+                echo
+                read -rp "${AMARILLO}Host MySQL [localhost]: ${NC}" MYSQL_HOST
+                MYSQL_HOST=${MYSQL_HOST:-localhost}
+                export MYSQL_PWD="$MYSQL_PASS"
+
+                # for sql in "$backup_src/sql/"*.sql; do
+                #     [[ -f "$sql" ]] || continue
+                #     local dbname
+                #     dbname=$(basename "$sql" .sql)
+                #     echo "Importando $sql en la base $dbname" | tee -a "$logfile"
+                #     mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>&1 | tee -a "$logfile" || rc=1
+                # done
+                for sql in "$backup_src/sql/"*.sql; do
+                    [[ -f "$sql" ]] || continue
+                    local dbname
+                    dbname=$(basename "$sql" .sql)
+                    echo "Importando $sql en la base $dbname" | tee -a "$logfile"
+                    if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+                        echo "[DRY-RUN] mysql -h $MYSQL_HOST -u $MYSQL_USER $dbname < $sql" | tee -a "$logfile"
+                        echo "[DRY-RUN] Validando conexión MySQL..." | tee -a "$logfile"
+                        if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e 'SELECT 1;' 2>>"$logfile"; then
+                            echo -e "${ROJO}[ERROR]: No se pudo conectar a MySQL.${NC}" | tee -a "$logfile"
+                            rc=1
+                        else
+                            echo "[DRY-RUN] Conexión OK, importación simulada." | tee -a "$logfile"
+                        fi
+                    else
+                        if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>&1 | tee -a "$logfile"; then
+                            echo -e "${ROJO}[ERROR]: Falló la importación de $sql${NC}" | tee -a "$logfile"
+                            rc=1
+                        fi
+                    fi
+                done
+                unset MYSQL_PWD
+            fi
+        fi
+    fi
+
+    if [[ "$rc" -eq 0 ]]; then
+        echo -e "${VERDE}Restore LAMP completado sin errores.${NC}" | tee -a "$logfile"
+    else
+        echo -e "${ROJO}Restore LAMP finalizado con errores. Revisa el log: $logfile${NC}" | tee -a "$logfile"
+    fi
+    # opcion2=0
+    # opcion3=0
+    reiniciar_variables
+    return $rc
+}
+# fin restore_lamp
+# ==============================
+
+# ==============================
+# BUCLE PRINCIPAL
+# ==============================
+# ini bucle principal
+while [[ "$opcion" != "0" ]]
+do
+# Pintamos menú
+menu #invocamos el menú
+
+# case para selección de opción
+    case $opcion in
+        1)
+        while [[ $opcion2 -ne 0 ]]
+        do
+            #invocamos el menú de selección de origen
+            menu_origen
+            case $opcion2 in
+            1)
+                echo "Opción 1. Respaldo del directorio actual"
+                echo "=============================="
+                #Revisar si el DIR_ACTUAL es un directorio válido
+                if [ -d "$DIR_ACTUAL" ]; then
+                    dirorigen=$DIR_ACTUAL
+                    bucle_respaldo
+                else
+                    echo -e "${ROJO}[ERROR]: El directorio de origen no es válido.${NC}"
+                    read -p "${AMARILLO}Pulse una tecla para volver...${NC}"
+                fi
+                break
+                ;;
+            2)
+                echo "Opción 2. Respaldo del directorio del script"
+                echo "=============================="
+                #Revisar si el DIR_SCRIPT es un directorio válido
+                if [ -d "$DIR_SCRIPT" ]; then
+                    dirorigen=$DIR_SCRIPT
+                    bucle_respaldo
+                else
+                    echo -e "${ROJO}[ERROR]: El directorio de origen no es válido.${NC}"
+                    read -p "${AMARILLO}Pulse una tecla para volver...${NC}"
+                fi
+                break
+                ;;
+            3)
+                echo "Opción 3. Respaldo del directorio del usuario"
+                echo "=============================="
+                #Revisar si el DIR_USUARIO es un directorio válido
+                if [ -d "$DIR_USUARIO" ]; then
+                    dirorigen=$DIR_USUARIO
+                    bucle_respaldo
+                else
+                    echo -e "${ROJO}[ERROR]: El directorio de origen no es válido.${NC}"
+                    read -p "${AMARILLO}Pulse una tecla para volver...${NC}"
+                fi
+                break
+                ;;
+            4)
+                echo "Opción 4. Respaldo del directorio indicado por el usuario"
+                echo "=============================="
+                read -p "${AMARILLO}Ingrese la ruta del directorio de origen: ${NC}" DIR_ESCRITO
+                DIR_ESCRITO=$(expand_path "$DIR_ESCRITO")
+                #Revisar si el DIR_ESCRITO es un directorio válido
+                if is_remote_url "$DIR_ESCRITO" || [ -d "$DIR_ESCRITO" ]; then
+                    if is_remote_url "$DIR_ESCRITO"; then
+                        echo "El directorio de origen es remoto: $DIR_ESCRITO"
+                    fi
+                    dirorigen=$DIR_ESCRITO
+                    bucle_respaldo
+                else
+                    echo -e "${ROJO}[ERROR]: El directorio de origen no es válido.${NC}"
+                    read -p "${AMARILLO}Pulse una tecla para volver...${NC}"
+                fi
+                break
+                ;;
+            5)
+                echo "Opción 5. Respaldo del sistema LAMP (Directorio /workspace, Bases de datos MySQL, Configuración de Apache, Filezilla y ZendFramework)"
+                echo "=============================="
+                dirorigen="/home/$USER/workspace/"
+                if [ -d "$dirorigen" ]; then
+                    bucle_respaldo_LAMP
+                else
+                    echo -e "${ROJO}[ERROR]: El directorio de origen no es válido.${NC}"
+                    read -p "${AMARILLO}Pulse una tecla para volver...${NC}"
+                fi
+                break
+                ;;
+            0)
+                echo "Opción 0. Volver al menú principal"
+                break
+                ;;
+            *)
+                echo "Opción no válida"
+                ;;
+            esac
+            done
+        ;;
+
+    # en el menu:
+    2)
+        restaurar_respaldo
+        ;;
+    0)
+        echo "Bie cha!!" #salimos del case+menú
+        #sleep 3
+        #read -p "Pulse una tecla para salir..."
+        ;;
+    *)
+        echo -e "${ROJO}[ERROR]: Opción '$opcion' no válida...${NC}"
+        ;;
+esac
+done
+# fin bucle principal
+# ==============================
+
