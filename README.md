@@ -32,7 +32,6 @@ Script de backup para sincronizar directorios locales y remotos usando `rsync` (
 Ejecuta:
 
 ```bash
-cd /home/ricardo/Documentos/BACKUP
 ./backupR.sh
 ```
 
@@ -44,7 +43,7 @@ Sigue los menús para elegir origen y destino. Puedes usar rutas locales, scp-li
 - Dry-run (verifica sin transferir):
 
 ```bash
-./backupR.sh --non-interactive --src /home/ricardo/Documentos/CV2026 --dst sadmin@192.168.0.14:/home/sadmin/Documentos --dry-run
+./backupR.sh --non-interactive --src /ruta/origen --dst user@host:/ruta/destino --dry-run
 ```
 
 - Transferencia real (asegúrate de tener claves SSH configuradas y quitar `--dry-run`):
@@ -87,7 +86,7 @@ Configura autenticación sin contraseña y prueba primero con `--dry-run`.
 
 ```bash
 # Backup diario a las 03:00 (ajusta rutas y usuario)
-0 3 * * * /home/ricardo/Documentos/BACKUP/backupR.sh --non-interactive --src /origen --dst user@host:/destino >> /home/ricardo/Documentos/BACKUP/logs/cron-backup-$(date +\%F).log 2>&1
+0 3 * * * /ruta/a/directorio/backupR.sh --non-interactive --src /origen --dst user@host:/destino >> /ruta/a/directorio/logs/cron-backup-$(date +\%F).log 2>&1
 ```
 
 **Buenas prácticas**
@@ -95,12 +94,3 @@ Configura autenticación sin contraseña y prueba primero con `--dry-run`.
 - Probar siempre con `--dry-run` antes de ejecuciones automáticas.
 - Mantener las claves SSH con `ssh-agent` o `ssh-key` y restringir permisos.
 - Revisar y personalizar `exclude_list.txt` para descartar ficheros innecesarios.
-
-**Siguientes pasos recomendados**
---------------------------------
-- Verificar conectividad de la VM (VirtualBox networking) y que `sshd` escucha en el destino.
-- Probar una transferencia real cuando las claves SSH estén instaladas.
-- Si quieres, aplico un parche adicional para exponer `--logdir` y limpiar duplicados de `--rsync-path`.
-
----
-Si quieres que aplique cambios adicionales (opciones CLI extra, limpieza de duplicados en `do_rsync` o tests automatizados), dime y lo agrego.
