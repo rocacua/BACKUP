@@ -1822,6 +1822,9 @@ backup_LAMP(){
         	if ! command -v mysql &> /dev/null || ! command -v mysqldump &> /dev/null; then
             	log "No es posible respaldar las bases de datos porque falta instalar mysql o mysqldump." "error"
         	else
+                # 1. Aseguramos que la carpeta local /home/sql exista y tenga los permisos limpios
+                sudo mkdir -p /home/sql
+                sudo chmod 755 /home/sql
             	echo -e -n "$(pintar "Deseas respaldar MySQL? [S/n]: " "prompt")"
             	read -r respaldarbd
             	respaldarbd=${respaldarbd:-S}
@@ -1842,34 +1845,45 @@ backup_LAMP(){
                 	if [[ -z "$dbs" ]]; then
                     	log "[WARN]: No se encontraron bases de datos para respaldar." "alerta"
                 	else
-                    	mkdir -p "$dirorigen/sql"
-                    	for db in $dbs; do
-                        	log "Respaldando base de datos: $db"
-                        	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-                            	log -e "SIMULACIÓN DE BACKUP MySQL"
-                            	# Crear archivo simulado (vacío o con comentario)
-                            	# echo "-- [DRY-RUN] Simulación de dump para $db" > "$dirorigen/sql/$db.sql.dryrun"
-                            	#Usar mysqlcheck
-                            	#mysqlcheck -h "$MYSQL_HOST" -u "$MYSQL_USER" "$db" 2>>"$logfile" || rc=1
-                            	#Hacer dump a null
-                            	log "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER -p*** $db (sin guardar a archivo)"
-                            	if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" -p"$MYSQL_PASS" "$db" > /dev/null 2>>"$logfile"; then
-                                	log "mysqldump fallo para $db" "error"
-                                	rc=1
-                                	continue
-                            	fi
-                            	log "[DRY-RUN] Dump de $db validado correctamente (sin guardar)"
+                    	# Aseguramos que la carpeta local compartida exista con permisos limpios
+                    	sudo mkdir -p /home/sql
+                    	sudo chmod 755 /home/sql
 
-                            	#echo "mysqldump -h ""$MYSQL_HOST"" -u ""$MYSQL_USER"" ""$db"" > ""$dirorigen/sql/$db.sql"" | tee -a "$logfile"
-                        	else
-                            	if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" -p"$MYSQL_PASS" "$db" > "$dirorigen/sql/$db.sql" 2>>"$logfile"; then
-                                	log "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER -p*** $db > $dirorigen/sql/$db.sql"
-                                	log "mysqldump fallo para $db" "error"
+                    	for db in $dbs; do
+                        	log "Procesando base de datos: $db"
+                        	
+                        	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+                            	# --- MODO SIMULACIÓN ---
+                            	log "[DRY-RUN] Simulación de volcado para la base de datos '$db'" "alerta"
+                            	log "[DRY-RUN] mysqldump -h $MYSQL_HOST -u $MYSQL_USER -p*** $db > /home/sql/${db}.sql"
+                            	
+                            	# Validamos de forma segura si la base de datos se puede leer sin escribir en disco
+                            	if ! mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" -p"$MYSQL_PASS" "$db" > /dev/null 2>>"$logfile"; then
+                                	log "Simulación fallida: mysqldump detectó errores en $db" "error"
                                 	rc=1
                                 	continue
                             	fi
+                            	log "[DRY-RUN] Estructura de $db validada con éxito." "exito"
+                        	else
+                            	# --- MODO REAL ---
+                            	log "Exportando volcado real de '$db' hacia /home/sql/${db}.sql..." "menu"
+                            	
+                            	# Forzamos a que sudo realice la exportación completa hacia la carpeta compartida
+                            	if ! sudo sh -c "export MYSQL_PWD='$MYSQL_PASS'; mysqldump --opt -h '$MYSQL_HOST' -u '$MYSQL_USER' '$db' > '/home/sql/${db}.sql'" 2>>"$logfile"; then
+                                	log "Error crítico: El volcado real falló para la base de datos $db" "error"
+                                	rc=1
+                                	continue
+                            	fi
+                            	log "Base de datos '$db' exportada correctamente." "exito"
                         	fi
                     	done
+
+                    	# CORRECCIÓN DE PROPIETARIOS AL TERMINAR EL BUCLE:
+                    	# Si no fue simulación, le damos la propiedad de los archivos a tu usuario sadmin 
+                    	# para que el comando rsync posterior pueda empaquetarlos sin fallos de permisos.
+                    	if [[ "$prueba_rsync" =~ ^[nN]$ ]]; then
+                        	sudo chown -R "${USER}:${USER}" /home/sql
+                    	fi
                 	fi
             	else
                 	log "No se realizará el respaldo de MySQL"
@@ -2035,7 +2049,9 @@ select_backup_dir() {
     	return 1
 	fi
 
-	mapfile -t backups < <(find "$root" -mindepth 2 -maxdepth 4 -type d | sort)
+	#mapfile -t backups < <(find "$root" -mindepth 2 -maxdepth 4 -type d | sort)
+    # Buscamos solo carpetas que contengan la estructura de respaldo real (nivel intermedio)
+	mapfile -t backups < <(find "$root" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sort)
 	if [[ ${#backups[@]} -eq 0 ]]; then
     	log "No se encontraron backups en $root." "error"
     	return 1
@@ -2249,8 +2265,16 @@ restaurar_respaldo() {
 	log "Destino: $restore_dest"
 
 	if is_lamp_backup "$backup_src"; then
-    	restore_lamp "$backup_src" "$restore_dest" "$logfile"
-    	local rc=$?
+    	#restore_lamp "$backup_src" "$restore_dest" "$logfile"
+    	#local rc=$?
+        restore_lamp "$backup_src" "$restore_dest" "$logfile" || local resultado_restore=$?
+
+	    # Ahora el script continuará vivo de forma garantizada aquí abajo
+	    echo ""
+	    read -n 1 -s -r -p "$(log "Pulse una tecla para volver al menú principal..." "prompt")"
+	    echo ""
+	    
+	    return 0
 	else
     	local diro=$(basename "$restore_dest")
     	local clean_dir="${diro%/}"
@@ -2292,6 +2316,9 @@ restore_lamp() {
 	local logfile="$3"
 	local rc=0
 
+	# Array para almacenar los componentes que fallen durante la restauración
+	local errores_resumen=()
+
 	log "Restauración especial LAMP desde $backup_src"
 
 	if [[ ! -d "$backup_src" ]]; then
@@ -2301,15 +2328,14 @@ restore_lamp() {
 
 	formato_origen=$(obtener_tipo_fs "$backup_src")
 	if ! is_posix_fs "$formato_origen" ; then
-    	log "El sistema de archivos de origen es ${formato_origen}, y no soporta los permisos de Linux, por lo que restaurar podría probocar fallos de permisos, use un disco ext4 para realizar el respaldo." "error"
-    	echo -n "$(pintar "¿Desea asumir el riego? (s/N): " "prompt")"
+    	log "El sistema de archivos de origen es ${formato_origen}, y no soporta los permisos de Linux." "error"
+    	echo -n "$(pintar "¿Desea asumir el riesgo? (s/N): " "prompt")"
     	read -r arriesgo
     	arriesgo=${arriesgo:-N}
     	if [[ "$arriesgo" =~ ^[nN]$ ]]; then
         	return 1
     	fi
 	fi
-
 
 	local target_filezilla="$DIR_USUARIO/.config/filezilla/"
 	local target_sites="/etc/apache2/sites-available/"
@@ -2318,169 +2344,156 @@ restore_lamp() {
 	local target_daw="/home/$USER/Documentos/DAW2/"
 	local target_workspace="$DIR_USUARIO/workspace/"
 
+	# Comprobación de espacio disponible
+	log "Comprobando espacio disponible en disco..."
+	local tamano_backup_gb
+	tamano_backup_gb=$(obtener_tamano_multiples_dir_gb "$backup_src")
+	tamano_backup_gb=${tamano_backup_gb:-0}
+
+	local espacio_libre_gb
+	espacio_libre_gb=$(df -BG "$DIR_USUARIO" | awk 'NR==2 {print $4}' | tr -cd '0-9')
+	espacio_libre_gb=${espacio_libre_gb:-0}
+
+	log "Tamaño aproximado del backup: ${tamano_backup_gb} GB | Espacio libre: ${espacio_libre_gb} GB"
+
+	if [ "$tamano_backup_gb" -gt "$espacio_libre_gb" ]; then
+		log "FALTA ESPACIO: El backup necesita ${tamano_backup_gb} GB y solo tienes ${espacio_libre_gb} GB libres." "error"
+		echo -n "$(pintar "¿Desea cancelar la operación? (S/n): " "prompt")"
+		read -r cancelar_espacio
+		cancelar_espacio=${cancelar_espacio:-S}
+		if [[ "$cancelar_espacio" =~ ^[sS]$ ]]; then
+			return 1
+		fi
+	fi
+
+	# Asegurar directorios vivos
 	mkdir -p "$target_filezilla" "$target_sql" "$target_daw" "$target_workspace"
 
 	if [[ -z "$prueba_rsync" ]]; then
-    	log "A continuación se pregunta si estas haciendo pruebas. Si respondes 'S' no se copiarán los archivos y solo realizará una simulación, esta configuración durará mientras se ejecute el programa, para cambiarla tienes que salir del programa y volver a ejecutarlo. " "alerta"
-    	read -rp "$(pintar "¿Estas haciendo pruebas? [N/s]: " "prompt")" prueba_rsync
+    	log "A continuación se preguntará si estás haciendo pruebas..." "alerta"
+    	read -rp "$(pintar "¿Estás haciendo pruebas? [N/s]: " "prompt")" prueba_rsync
     	prueba_rsync=${prueba_rsync:-n}
 	fi
 
-	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-    	modarr_ref+=(--dry-run)
-	fi
-
+	# =========================================================================
+	# SUB-FUNCIÓN DE RESTAURACIÓN DE CARPETAS
+	# =========================================================================
 	restore_path() {
     	local src="$1"
     	local dst="$2"
     	local label="$3"
 
-    	if [[ -d "$src" && -n "$(find "$src" -mindepth 1 | head -n 1)" ]]; then
-       	 
-        	# --- NUEVO: RESPALDO DE SEGURIDAD CON 'mv' ---
-        	# Si el directorio de destino ya existe, lo renombramos antes de restaurar
-        	if [[ -d "$dst" && "$prueba_rsync" =~ ^[nN]$ ]]; then
-            	# Creamos un nombre único con la fecha y hora actual (ej: ZendFramework_20260618_101532)
-            	local marca_temporal
-            	marca_temporal=$(date +"%Y%m%d_%H%M%S")
-           	 
-            	# Quitamos la barra inclinada del final de la ruta para que 'mv' funcione bien
-            	local dst_limpio="${dst%/}"
-            	local dst_respaldo="${dst_limpio}_antes_de_restaurar_${marca_temporal}"
-           	 
-            	log "Creando copia temporal del directorio actual: $dst a $dst_respaldo" "alerta"
-            	log "mv ${dst_limpio} ${dst_respaldo}"
-            	# Comprobamos si necesitamos usar sudo para mover la carpeta
-            	if [[ "$dst" == "$target_filezilla" || "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
-                	sudo mv "$dst_limpio" "$dst_respaldo"
-            	else
-                	mv "$dst_limpio" "$dst_respaldo"
-            	fi
-        	fi
-        	# ---------------------------------------------
+    	local comando_find="find \"$src\" -mindepth 1 2>/dev/null | head -n 1"
+    	if [[ "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
+        	comando_find="sudo find \"$src\" -mindepth 1 2>/dev/null | head -n 1"
+    	fi
 
-    	local sup=""
-        	log "Restaurando $label desde $src a $dst"
-        	if [[ "$dst" == "$target_filezilla" || "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
-            	#sudo rsync -aHv --delete "$src"/ "$dst" 2>&1 | tee -a "$logfile" || rc=1
-            	sup="sudo"
-        	else
-            	#rsync -aHv --delete "$src"/ "$dst" 2>&1 | tee -a "$logfile" || rc=1
-            	sup=""
+    	if [[ -d "$src" && -n "$(eval "$comando_find")" ]]; then
+       	 
+        	if [[ ! -d "$dst" ]]; then
+            	log "El destino $dst no existía. Creándolo..." "alerta"
+            	sudo mkdir -p "$dst"
+            	sudo chown -R "${USER}:${USER}" "$dst"
         	fi
-        	do_rsync "$sup" "$src" "$dst" "$label" "$logfile" #modarr modexarr "$MI_PASSWORD"
+
+        	local sup=""
+        	if [[ "$dst" == "$target_filezilla" || "$dst" == "$target_sites" || "$dst" == "$target_sql" || "$dst" == "$target_zend" ]]; then
+            	sup="sudo"
+        	fi
+
+        	log "Restaurando $label desde $src a $dst"
+
+        	local src_fijo="${src%/}/"
+        	local dst_fijo="${dst%/}/"
+        	
+        	# REGENERACIÓN SEGURA DEL ARRAY: 
+        	# Copiamos tus parámetros por defecto (-aHv --delete)
+        	modarr=("${rsync_opts[@]}")
+        	
+        	# Si NO es una simulación, inyectamos la red de seguridad sin romper get_rsync_opts
+        	if [[ "$prueba_rsync" =~ ^[nN]$ ]]; then
+            	local marca_temporal=$(date +"%Y%m%d_%H%M%S")
+            	local backup_dir_seguro="/tmp/rsync_backup_${label}_${marca_temporal}"
+            	modarr+=( "--backup" "--backup-dir=$backup_dir_seguro" )
+        	else
+            	modarr+=( "--dry-run" )
+        	fi
+
+        	do_rsync "$sup" "$src_fijo" "$dst_fijo" "$label" "$logfile" "modarr"
         	rc=$?
     	else
         	log "No existe o está vacío el directorio de backup $label: $src" "error"
+			errores_resumen+=( "Directorio de backup $label (No encontrado/Vacío)" )
         	rc=1
     	fi
 	}
 
+	# Ejecución de restauraciones estructurales
 	restore_path "$backup_src/filezilla" "$target_filezilla" "FileZilla"
 	restore_path "$backup_src/sites-available" "$target_sites" "Apache sites-available"
 	restore_path "$backup_src/sql" "$target_sql" "SQL dumps"
 	restore_path "$backup_src/DAW2" "$target_daw" "DAW2"
 	restore_path "$backup_src/workspace" "$target_workspace" "Workspace"
 
-	# --- RESTAURACIÓN DE ZENDFRAMEWORK ---
+	# =========================================================================
+	# SECCIÓN ZENDFRAMEWORK
+	# =========================================================================
 	local zend_src
-	zend_src=$(find "$backup_src" -maxdepth 1 -type d -name 'ZendFramework*' | sort | head -n 1)
+	zend_src=$(sudo find "$backup_src" -maxdepth 1 -type d -name 'ZendFramework*' 2>/dev/null | sort | head -n 1)
 	if [[ -n "$zend_src" ]]; then
-    	#log "Crear backup por si algo falla" "alerta"
-    	#log "mv ${target_zend} ${target_zend}_error_backup"
-    	#mv "${target_zend}" "${target_zend}_error_backup"
-    	#sudo mv /var/lib/ZendFramework /var/lib/ZendFramework_error_backup
-   	 
-    	# --- RESPALDO DE SEGURIDAD CON 'mv' PARA ZENDFRAMEWORK ---
-    	# Si la carpeta destino ya existe en el sistema, la renombramos como medida de seguridad
-    	if [[ -d "$target_zend" && "$prueba_rsync" =~ ^[nN]$ ]]; then
-        	local marca_temporal_zend
-        	marca_temporal_zend=$(date +"%Y%m%d_%H%M%S")
-       	 
-        	# Eliminamos la barra final para que el comando 'mv' no falle
-        	local target_zend_limpio="${target_zend%/}"
-        	local target_zend_respaldo="${target_zend_limpio}_antes_de_restaurar_${marca_temporal_zend}"
-       	 
-        	log "Creando copia temporal del sistema actual: $target_zend a $target_zend_respaldo" "alerta"
-        	log "mv ${target_zend_limpio} ${target_zend_respaldo}"
-        	# Como está en /var/lib/, usamos siempre sudo para moverla
-        	sudo mv "$target_zend_limpio" "$target_zend_respaldo"
+    	if [[ ! -d "$target_zend" ]]; then
+        	sudo mkdir -p "$target_zend"
     	fi
-    	# ---------------------------------------------------------
    	 
-    	#Añadir / al final de $zend_src para que sincronice el directorio y no acave en /var/lib/ZendFramework/ZendFramework
-    	#zend_src+="/"
     	log "Restaurando ZendFramework desde $zend_src a $target_zend"
-    	#sudo rsync -aHv --delete "$zend_src"/ "$target_zend" 2>&1 | tee -a "$logfile" || rc=1
-    	do_rsync "sudo" "$zend_src" "$target_zend" "ZendFramework" "$logfile" #modarr modexarr "$MI_PASSWORD"
-    	rc=$?
+    	
+    	local backup_opts_zf=()
+    	get_rsync_opts "$zend_src" "$target_zend" backup_opts_zf
+    	if [[ "$prueba_rsync" =~ ^[nN]$ ]]; then
+        	local marca_zf=$(date +"%Y%m%d_%H%M%S")
+        	backup_opts_zf+=( "--backup" "--backup-dir=/tmp/rsync_backup_Zend_${marca_zf}" )
+    	fi
+    	
+    	modarr=("${backup_opts_zf[@]}")
+    	
+    	local zend_src_fijo="${zend_src%/}/"
+    	local target_zend_fijo="${target_zend%/}/"
+    	
+    	if ! do_rsync "sudo" "$zend_src_fijo" "$target_zend_fijo" "ZendFramework" "$logfile" "modarr"; then
+			errores_resumen+=( "Entorno ZendFramework" )
+			rc=1
+		fi
 	else
     	log "No existe backup de ZendFramework en $backup_src" "error"
+		errores_resumen+=( "Librerías ZendFramework (No encontradas)" )
     	rc=1
 	fi
 
-	# --- SECCIÓN SEGURA DE BASES DE DATOS MYSQL ---
+	if [[ "$prueba_rsync" =~ ^[nN]$ ]]; then
+    	log "Validando configuraciones de Apache..." "menu"
+    	if sudo apache2ctl -t &>/dev/null; then
+        	sudo systemctl restart apache2 2>/dev/null || true
+        	log "¡Entorno Apache reiniciado con éxito!" "exito"
+    	else
+        	log "Advertencia: Se detectaron fallos de sintaxis en Apache." "alerta"
+			errores_resumen+=( "Sintaxis de Apache rota (Revisar archivos sites-available)" )
+    	fi
+	fi
+
+	# =========================================================================
+	# SECCIÓN DE BASES DE DATOS MYSQL
+	# =========================================================================
 	if ! command -v mysql &> /dev/null; then
     	log "No es posible importar las bases de datos porque falta instalar mysql." "error"
+		errores_resumen+=( "Servicio MySQL (Comando no instalado)" )
 	else
-    	if [[ -d "$backup_src/sql" && -n "$(find "$backup_src/sql" -maxdepth 1 -name '*.sql' -print -quit)" ]]; then
+    	if [[ -d "$backup_src/sql" && -n "$(sudo find "$backup_src/sql" -maxdepth 1 -name '*.sql' -print -quit 2>/dev/null)" ]]; then
         	log "Se han encontrado dumps SQL en $backup_src/sql"
-#        	read -rp "$(pintar "¿Importar los dumps SQL a MySQL ahora? (s/N): " "prompt")" import_sql
-#        	import_sql=${import_sql:-n}
-#        	if [[ "$import_sql" =~ ^[sS]$ ]]; then
-#            	read -rp "$(pintar "Usuario MySQL [root]: " "prompt")" MYSQL_USER
-#            	MYSQL_USER=${MYSQL_USER:-root}
-#            	read -s -rp "$(pintar "Contraseña MySQL: " "prompt")" MYSQL_PASS
-#            	MYSQL_PASS=${MYSQL_PASS:-admin}
-#            	echo
-#            	read -rp "$(pintar "Host MySQL [localhost]: " "prompt")" MYSQL_HOST
-#            	MYSQL_HOST=${MYSQL_HOST:-localhost}
-#            	export MYSQL_PWD="$MYSQL_PASS"
-#
-#            	# for sql in "$backup_src/sql/"*.sql; do
-#            	# 	[[ -f "$sql" ]] || continue
-#            	# 	local dbname
-#            	# 	dbname=$(basename "$sql" .sql)
-#            	# 	echo "Importando $sql en la base $dbname" | tee -a "$logfile"
-#            	# 	mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>&1 | tee -a "$logfile" || rc=1
-#            	# done
-#            	for sql in "$backup_src/sql/"*.sql; do
-#                	[[ -f "$sql" ]] || continue
-#                	local dbname
-#                	dbname=$(basename "$sql" .sql)
-#                	log "Importando $sql en la base $dbname"
-#                	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-#                    	log "[DRY-RUN] mysql -h $MYSQL_HOST -u $MYSQL_USER $dbname < $sql"
-#                    	log "[DRY-RUN] Validando conexión MySQL..."
-#                    	if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e 'SELECT 1;' 2>>"$logfile"; then
-#                        	log -e "${ROJO}[ERROR]: No se pudo conectar a MySQL.${NC}"
-#                        	rc=1
-#                    	else
-#                        	log "[DRY-RUN] Conexión OK, importación simulada."
-#                    	fi
-#                	else
-#                    	if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>&1 | tee -a "$logfile"; then
-#                        	log -e "${ROJO}[ERROR]: Falló la importación de $sql${NC}"
-#                        	rc=1
-#                    	fi
-#                	fi
-#            	done
-#            	unset MYSQL_PWD
-#        	fi
-#    	fi
-#	fi
-       	 
-        	log "--------------------------------------------------------" "menu"
-        	log "Opciones de restauración de base de datos:" "alerta" "menu"
-        	log "1) Restaurar TODAS las bases de datos encontradas" "menu"
-        	log "2) Seleccionar UNA por UNA qué base de datos restaurar" "menu"
-        	log "3) NO restaurar ninguna base de datos (Saltar)" "menu"
-        	log "--------------------------------------------------------"
-        	read -rp "$(pintar "Selecciona una opción: " "prompt")" opcion_sql
-        	opcion_sql=${opcion_sql:-3}
-
-        	if [[ "$opcion_sql" =~ ^[12]$ ]]; then
-
+        	
+        	read -rp "$(pintar "¿Importar los dumps SQL a MySQL ahora? (s/N): " "prompt")" import_sql
+        	import_sql=${import_sql:-n}
+        	
+        	if [[ "$import_sql" =~ ^[sS]$ ]]; then
             	read -rp "$(pintar "Usuario MySQL [root]: " "prompt")" MYSQL_USER
             	MYSQL_USER=${MYSQL_USER:-root}
             	read -s -rp "$(pintar "Contraseña MySQL: " "prompt")" MYSQL_PASS
@@ -2490,149 +2503,87 @@ restore_lamp() {
             	MYSQL_HOST=${MYSQL_HOST:-localhost}
             	export MYSQL_PWD="$MYSQL_PASS"
 
-            	# Validar la conexión antes de iniciar cualquier bucle
-            	if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e 'SELECT 1;' &>/dev/null; then
-                	log "No se pudo conectar a MySQL con las credenciales dadas. Abortando importación SQL." "error"
-                	unset MYSQL_PWD
-                	rc=1
-                	return $rc
-            	fi
+            	            	# Cargamos los archivos .sql usando sudo para saltar el bloqueo de lectura de sadmin
+            	local archivos_sql=()
+            	mapfile -t archivos_sql < <(sudo find "$backup_src/sql" -maxdepth 1 -name "*.sql" 2>/dev/null)
 
-            	for sql in "$backup_src/sql/"*.sql; do
+            	for sql in "${archivos_sql[@]}"; do
                 	[[ -f "$sql" ]] || continue
                 	local dbname
                 	dbname=$(basename "$sql" .sql)
-               	 
-                	# FILTRO 1: Protegemos bases de datos críticas del sistema
-                	if [[ "$dbname" =~ ^(mysql|information_schema|performance_schema|sys)$ ]]; then
-                    	log "Saltando base de datos del sistema por seguridad: $dbname" "alerta"
-                    	continue
-                	fi
-
-                	# FILTRO 2: Si eligió opción interactiva (2), preguntamos de una en una
-                	if [[ "$opcion_sql" == "2" ]]; then
-                    	read -rp "$(pintar "¿Deseas restaurar la base de datos '$dbname'? [s/N]: " "prompt")" confirmar_db
-                    	[[ "$confirmar_db" =~ ^[sS]$ ]] || continue
-                	fi
-
+                	
                 	log "Procesando base de datos: $dbname"
-               	 
+                	
                 	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-                    	log "[DRY-RUN] mysql -h $MYSQL_HOST -u $MYSQL_USER $dbname < $sql"
-                    	log "[DRY-RUN] Conexión OK, importación simulada."
+                    	log "[SIMULACIÓN] mysql -h $MYSQL_HOST -u $MYSQL_USER -e 'CREATE DATABASE IF NOT EXISTS $dbname;'"
                 	else
-                    	# FILTRO 3: Si la BD ya existe, hacemos un respaldo rápido en caliente en /tmp/
-                    	if mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e "USE $dbname" &>/dev/null; then
-                        	local backup_temp="/tmp/${dbname}_pre_restaurar_$(date +%Y%m%d_%H%M%S).sql"
-                        	log "La base de datos '$dbname' ya existe. Creando respaldo previo en $backup_temp" "alerta"
-                        	mysqldump -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" > "$backup_temp" 2>/dev/null
+                    	log "Importando archivo $sql en la base de datos '$dbname'..." "menu"
+                    	
+                    	# Usamos sudo cat para leer el archivo .sql con permisos y meterselo a mysql
+                    	if ! mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e "CREATE DATABASE IF NOT EXISTS \`$dbname\`;" 2>>"$logfile"; then
+                    		log "No se pudo verificar o crear la base de datos '$dbname'." "error"
+							errores_resumen+=( "Base de datos MySQL: $dbname (Fallo al crear)" )
+                    		rc=1
+                    		continue
                     	fi
-
-                    	log "Importando $sql en la base $dbname..."
-                    	# Forzamos la creación de la BD por si se eliminó o es nueva
-                    	mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" -e "CREATE DATABASE IF NOT EXISTS \`$dbname\`;" 2>>"$logfile"
-                    	mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" < "$sql" 2>>"$logfile"
-                   	 
-                    	if [ ${PIPESTATUS[0]} -eq 0 ]; then
-                        	log "Base de datos '$dbname' importada con éxito."
+                    	
+                    	if sudo cat "$sql" | mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$dbname" 2>>"$logfile"; then
+                    		log "Base de datos '$dbname' restaurada con éxito." "exito"
                     	else
-                        	log "Error al importar la base de datos '$dbname'." "error"
-                        	log -e "${ROJO}[ERROR]: Falló la importación de $sql${NC}"
-                        	rc=1
+                    		log "Error al importar el volcado de '$dbname'." "error"
+							errores_resumen+=( "Datos MySQL de: $dbname (Error en inyección SQL)" )
+                    		rc=1
                     	fi
                 	fi
             	done
             	unset MYSQL_PWD
-        	else
-            	log "Saliendo de la sección SQL sin realizar modificaciones."
         	fi
+		else
+			log "No se encontraron archivos .sql para restaurar en $backup_src/sql" "alerta"
     	fi
 	fi
+    limpiar_respaldos_temporales
+	# =========================================================================
+	# 📊 RESUMEN FINAL VISUAL DE ERRORES EN PANTALLA
+	# =========================================================================
+	echo "" > /dev/tty
+	log "==================================================" "menu" > /dev/tty
+	log "📋 INFORME FINAL DE LA RESTAURACIÓN" "menu" > /dev/tty
+	log "==================================================" "menu" > /dev/tty
 
-	# --- REINICIO DE APACHE AUTOMÁTICO ---
-	if [[ "$rc" -eq 0 ]]; then
-    	log "Restore LAMP completado sin errores de copia." "exito"
-   	 
-    	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
-        	log "[DRY-RUN] Simulación de reinicio: sudo service apache2 restart"
-    	else
-        	log "Reiniciando el servicio de Apache para aplicar cambios..."
-        	if command -v systemctl &> /dev/null; then
-            	sudo systemctl restart apache2 2>>"$logfile"
-        	else
-            	sudo service apache2 restart 2>>"$logfile"
-        	fi
-       	 
-        	if [ $? -eq 0 ]; then
-            	log "Apache se ha reiniciado correctamente." "exito"
-        	else
-            	log "Aviso: Apache no se pudo reiniciar. Compruébalo manualmente." "alerta"
-        	fi
-    	fi
+	if [ ${#errores_resumen[@]} -eq 0 ]; then
+		# Todo ha salido perfecto
+		if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then
+			pintar "🧪 [SIMULACIÓN] La simulación terminó sin detectar anomalías estructurales." "exito" > /dev/tty
+		else
+	        pintar "🎉 [ÉXITO] Todo el sistema LAMP ha sido restaurado correctamente sin fallos." "exito" > /dev/tty
+		fi
 	else
-    	log "Restore LAMP finalizado con errores. Revisa el log: $logfile" "error"
+		# Se capturaron problemas en el array interno
+		pintar "⚠️ Se detectaron incidencias en los siguientes módulos:" "error" > /dev/tty
+		echo "" > /dev/tty
+		for elem in "${errores_resumen[@]}"; do
+			pintar "   ❌ $elem" "error" > /dev/tty
+		done
+		echo "" > /dev/tty
+		pintar "ℹ️ Consulta el archivo log para ver el detalle técnico de los comandos: $logfile" "alerta" > /dev/tty
 	fi
+	log "==================================================" "menu" > /dev/tty
+	echo "" > /dev/tty
 
-	# Llamamos a la limpieza justo después de terminar la restauración
-	limpiar_respaldos_temporales
-
-	# opcion2=0
-	# opcion3=0
-	reiniciar_variables
-	return $rc
+	return "$rc"
 }
 # fin restore_lamp
 # ==============================
 # ini limpiar_respaldos_temporales
 limpiar_respaldos_temporales() {
-	log "--------------------------------------------------------" "menu"
-	log "Gestión de copias de seguridad previas en /tmp/" "alerta" "menu"
+    log "Limpiando archivos de resguardo temporales en /tmp..." "menu"
     
-	# Buscamos si existen archivos generados por nuestro script de restauración
-	local archivos_temp
-	archivos_temp=$(find /tmp -maxdepth 1 -name '*_pre_restaurar_*.sql' 2>/dev/null)
-
-	if [[ -z "$archivos_temp" ]]; then
-    	log "No se encontraron volcados temporales de restauración en /tmp/."
-    	return 0
-	fi
-
-	echo "Archivos encontrados:"
-	echo "$archivos_temp" | sed 's|^/tmp/|  - |'
-	echo "--------------------------------------------------------"
-	log "1) Eliminar TODOS los volcados temporales de /tmp/" "menu"
-	log "2) Preguntar UNA por UNA qué copia temporal borrar" "menu"
-	log "3) CONSERVAR todos los archivos (No hacer nada)" "menu"
-	log "--------------------------------------------------------"
+    # Borramos de forma segura (-rf) solo los directorios temporales creados por rsync
+    # El uso de || true garantiza que si no hay nada que borrar, set -e no mate el script
+    sudo rm -rf /tmp/rsync_backup_* 2>/dev/null || true
     
-	read -rp "$(pintar "Selecciona una opción: " "prompt")" opcion_limpieza
-	opcion_limpieza=${opcion_limpieza:-3}
-
-	case "$opcion_limpieza" in
-    	1)
-        	log "Eliminando todos los archivos temporales..."
-        	echo "$archivos_temp" | while read -r archivo; do
-            	[[ -f "$archivo" ]] || continue
-            	rm -f "$archivo" && log "Eliminado: $archivo"
-        	done
-        	log "Limpieza masiva completada." "exito"
-        	;;
-    	2)
-        	echo "$archivos_temp" | while read -r archivo; do
-            	[[ -f "$archivo" ]] || continue
-            	read -rp "$(pintar "¿Eliminar el archivo $(basename "$archivo")? [s/N]: " "prompt")" confirmar_borrado
-            	if [[ "$confirmar_borrado" =~ ^[sS]$ ]]; then
-                	rm -f "$archivo" && log "Eliminado: $archivo"
-            	else
-                	log "Conservado: $archivo"
-            	fi
-        	done
-        	log "Limpieza selectiva completada." "exito"
-        	;;
-    	3|*)
-        	log "Se conservan los archivos en /tmp/. Recuerda que el sistema los borrará en el próximo reinicio." "alerta"
-        	;;
-	esac
+    log "¡Limpieza completada con éxito!" "exito"
 }
 # fin limpiar_respaldos_temporales
 # ==============================
