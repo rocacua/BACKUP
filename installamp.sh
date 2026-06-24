@@ -632,25 +632,27 @@ EOF
 
     # Aplicar propiedad según la distribución para garantizar el código 200 OK
     if [ "$OS" = "SUSE-based" ]; then
-        # 1. Aplicar permisos físicos de herencia
+        # 1. Forzar permisos de paso unix tradicionales
         $SUDO chmod 755 "/home/${REAL_USER}"
         $SUDO chmod 755 "$WEB_ROOT"
         $SUDO chmod -R 755 "$DIR_PRUEBA"
         $SUDO chown -R "${REAL_USER}:${APACHE_USER}" "$DIR_PRUEBA"
+
+        # 2. 🛡️ PARCHE SELINUX (Exclusivo openSUSE Leap 16+)
+        # Permitir globalmente a Apache leer contenidos en los directorios "home"
+        if command -v setsebool >/dev/null 2>&1; then
+            $SUDO setsebool -P httpd_enable_homedirs on 2>/dev/null
+            
+            # Asignar el contexto de seguridad web correcto de manera recursiva a tu carpeta de desarrollo
+            $SUDO chcon -R -t httpd_user_content_t "$DIR_PRUEBA" 2>/dev/null
+        fi
+
+        # 3. Mover el VHost a la ubicación nativa de SUSE
+        # Asegúrate de que el script cree el vhost en vhosts.d/ en lugar de conf.d/ o sites-available/
+        $SUDO mkdir -p /etc/apache2/vhosts.d
+        echo "$VHOST_CONF" | $SUDO tee /etc/apache2/vhosts.d/prueba.conf > /dev/null
         
-        # 2. 🛡️ DESACTIVAR EL BLOQUEO DE APPARMOR PARA APACHE (Evita el Error 403)
-        # if [ -f /usr/sbin/aa-complain ]; then
-        #     $SUDO aa-complain /usr/sbin/httpd2 2>/dev/null
-        #     $SUDO systemctl restart apparmor
-        # fi
-        # 🔧 SOLUCIÓN EXCLUSIVA SUSE: Permitir de forma global que Apache sirva directorios alternativos
-        # Cambia 'Require all denied' a 'granted' en la raíz de configuración básica si existe el bloqueo
-        $SUDO sed -i 's/<Directory \/>/& \n    Require all granted/' /etc/apache2/httpd.conf 2>/dev/null
-        
-        # Activar mod_rewrite de Apache modificando las variables internas de openSUSE
-        $SUDO sed -i 's/APACHE_MODULES="/APACHE_MODULES="rewrite /g' /etc/sysconfig/apache2 2>/dev/null
-        
-        # Reiniciar Apache para aplicar los cambios de entorno globales
+        # Reiniciar Apache para asimilar el contexto de SELinux
         $SUDO systemctl restart apache2
     else
         # Forzar el permiso de paso (+x) en las carpetas superiores para evitar el bloqueo del servicio Apache
