@@ -186,7 +186,7 @@ else
             APACHE_S="apache2"
             DB_PKGS="mariadb mariadb-client"
             #PHP_PKGS="php8 php8-fpm php8-mysql php8-zip php8-gd php8-mbstring php8-curl php8-xml php8-bcmath ImageMagick php8-imagick"
-            PHP_PKGS="apache2-mod_php8 php8 php8-mysql php8-gd php8-mbstring php8-xml php8-zip php8-openssl php8-curl"
+            PHP_PKGS="apache2-mod_php8 php8 php8-mysql php8-gd php8-mbstring php8-dom php8-zip php8-openssl php8-curl php8-xmlreader php8-xmlwriter"
             FZ_PKG="filezilla"
             PMA_PKG="phpMyAdmin"
             APACHE_USER="wwwrun"
