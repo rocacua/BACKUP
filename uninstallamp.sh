@@ -137,6 +137,10 @@ else
     $SUDO sed -i '/127.0.0.1 prueba.test/d' /etc/hosts 2>/dev/null
 fi
 
+# 🚀 Obtener el usuario real en entorno SUDO para evitar rutas vacías
+#REAL_USER=${SUDO_USER:-$USER}
+#WEB_ROOT="/home/${REAL_USER}/workspace"
+
 # 4. Eliminar directorios del VirtualHost y espacio de trabajo de prueba
 echo " Limpiando directorios de archivos web..."
 if [ -d "${WEB_ROOT}/prueba" ]; then
@@ -147,6 +151,27 @@ fi
 # Eliminar el directorio padre workspace sólo si ha quedado completamente vacío
 if [ -d "$WEB_ROOT" ] && [ -z "$(ls -A "$WEB_ROOT" 2>/dev/null)" ]; then
     rmdir "$WEB_ROOT" 2>/dev/null
+fi
+
+# 🔧 RESTAURACIÓN EXCLUSIVA PARA openSUSE (SUSE-based)
+if [ -f /etc/apache2/httpd.conf ]; then
+    # 1. Eliminar el archivo VirtualHost de SUSE
+    $SUDO rm -f /etc/apache2/vhosts.d/prueba.conf 2>/dev/null
+    
+    # 2. 🌟 Eliminar la anulación de aislamiento ProtectHome de Systemd
+    $SUDO rm -rf /etc/systemd/system/apache2.service.d 2>/dev/null
+    $SUDO systemctl daemon-reload
+
+    # 3. Revertir la directiva 'Require all granted' del archivo global para mantener el sistema seguro
+    $SUDO sed -i '/Require all granted/d' /etc/apache2/httpd.conf 2>/dev/null
+    
+    # 4. Apagar el flag global de SELinux si se desea dejar el sistema original
+    if command -v setsebool >/dev/null 2>&1; then
+        $SUDO setsebool -P httpd_enable_homedirs off 2>/dev/null
+    fi
+    
+    # 4. Reiniciar el servicio limpio
+    $SUDO systemctl restart apache2 2>/dev/null
 fi
 
 # 5. Pregunta crítica: ¿Eliminar los directorios de datos de las bases de datos?

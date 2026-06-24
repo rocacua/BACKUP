@@ -101,6 +101,7 @@ pintar "##################################################INI###################
 # ==========================================
 # DETECCIÓN DE S.O. Y MAPEO DE PAQUETES
 # ==========================================
+REAL_USER=${SUDO_USER:-$USER}
 if [ "$(uname)" == "Darwin" ]; then
     OS="macOS"
     INSTALL_CMD="brew install"
@@ -113,7 +114,7 @@ if [ "$(uname)" == "Darwin" ]; then
     FZ_PKG="" # Filezilla en mac requiere brew install --cask, lo manejamos aparte
     PMA_PKG="phpmyadmin"  
     APACHE_USER="_www"
-    WEB_ROOT="/Users/${USER}/workspace" # En Mac la ruta es /Users/
+    WEB_ROOT="/Users/${REAL_USER}/workspace" # En Mac la ruta es /Users/
     WEB_ROOT_DEFAULT="/opt/homebrew/var/www"  
 else
     #. /etc/os-release
@@ -144,7 +145,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="www-data"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
         #    ;;
         #fedora|rhel|centos)
@@ -159,7 +160,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="apache"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
         #    ;;
         #arch|manjaro)
@@ -174,7 +175,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="http"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/srv/http"
         #    ;;
         #opensuse*|suse)
@@ -190,7 +191,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpMyAdmin"
             APACHE_USER="wwwrun"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
         #    ;;
         #*)
@@ -481,7 +482,7 @@ DIR_PRUEBA="$WEB_ROOT/prueba"
 if [ -d "$DIR_PRUEBA" ]; then
     pintar "Ya existe $DIR_PRUEBA, no lo creamos." "alerta"
 else
-    pintar "7. Configurando Host de prueba (prueba.test)..." "menu"
+    pintar "8. Configurando Host de prueba (prueba.test)..." "menu"
     
     # Definir rutas según S.O.
     case "$OS" in
@@ -629,7 +630,9 @@ try {
 </html>
 EOF
     # 🚀 CORRECCIÓN DE USUARIO: Obtener de forma segura el usuario real que lanzó el script
-    REAL_USER=${SUDO_USER:-$USER}
+    #REAL_USER=${SUDO_USER:-$USER}
+    #WEB_ROOT="/home/${REAL_USER}/workspace"
+    #DIR_PRUEBA="${WEB_ROOT}/prueba"
 
     # Aplicar propiedad según la distribución para garantizar el código 200 OK
     if [ "$OS" = "SUSE-based" ]; then
@@ -639,26 +642,34 @@ EOF
         $SUDO chmod -R 755 "$DIR_PRUEBA"
         $SUDO chown -R "${REAL_USER}:${APACHE_USER}" "$DIR_PRUEBA"
 
-        # 2. 🛡️ PARCHE SELINUX (Exclusivo openSUSE Leap 16+)
-        # Permitir globalmente a Apache leer contenidos en los directorios "home"
-        if command -v setsebool >/dev/null 2>&1; then
-            $SUDO setsebool -P httpd_enable_homedirs on 2>/dev/null
-            
-            # Asignar el contexto de seguridad web correcto de manera recursiva a tu carpeta de desarrollo
-            $SUDO chcon -R -t httpd_user_content_t "$DIR_PRUEBA" 2>/dev/null
-        fi
-        
-        # Activar el uso de PHP y el módulo de reescritura en la carga de Apache
+        # 2. Activar módulos necesarios en Apache (OBLIGATORIO en openSUSE)
         $SUDO a2enmod php8 2>/dev/null
         $SUDO a2enmod rewrite 2>/dev/null
-        
-        # Permitir el paso de Apache al directorio /home en la configuración global
+
+        # 3. 🌟 SOLUCIÓN AL ERROR 500 PERSISTENTE: Desactivar el aislamiento de /home en Systemd
+        # Esto crea un archivo de configuración drop-in que le permite a Apache ver el directorio /home
+        $SUDO mkdir -p /etc/systemd/system/apache2.service.d
+        echo -e "[Service]\nProtectHome=false" | $SUDO tee /etc/systemd/system/apache2.service.d/override.conf > /dev/null
+        $SUDO systemctl daemon-reload
+
+        # 4. Permitir el paso de Apache al directorio /home en la configuración global
         $SUDO sed -i 's/<Directory \/>/& \n    Require all granted/' /etc/apache2/httpd.conf 2>/dev/null
 
-        # 3. Mover el VHost a la ubicación nativa de SUSE
-        # Asegúrate de que el script cree el vhost en vhosts.d/ en lugar de conf.d/ o sites-available/
+        # 5. Mover el VHost a la ubicación nativa de SUSE
         $SUDO mkdir -p /etc/apache2/vhosts.d
         echo "$VHOST_CONF" | $SUDO tee /etc/apache2/vhosts.d/prueba.conf > /dev/null
+
+        # 6. 🛡️ PARCHE SELINUX COMPLETO (Se ejecuta con las rutas reconstruidas de forma segura)
+        # Permitir globalmente a Apache leer contenidos en los directorios "home"
+        #if command -v setsebool >/dev/null 2>&1; then
+        #if $SUDO [ -x /usr/sbin/setsebool ]; then
+            pintar "Ejecutar setsebool Y chcon -R -t httpd_user_content_t $DIR_PRUEBA" "alerta"
+            $SUDO setsebool -P httpd_enable_homedirs on 2>/dev/null
+            #sudo setsebool -P httpd_enable_homedirs on
+            # Asignar el contexto de seguridad web correcto de manera recursiva a tu carpeta de desarrollo
+            $SUDO chcon -R -t httpd_user_content_t "$DIR_PRUEBA" 2>/dev/null
+            #sudo chcon -R -t httpd_user_content_t /home/sadmin/workspace/prueba
+        #fi
         
         # Reiniciar Apache para asimilar el contexto de SELinux
         $SUDO systemctl restart apache2
@@ -685,6 +696,17 @@ pintar "Aplicando reinicio de seguridad a los servicios..." "menu"
 if [ "$OS" == "macOS" ]; then
     brew services restart $APACHE_S > /dev/null 2>&1
     brew services restart mysql > /dev/null 2>&1
+elif [ "$OS" = "SUSE-based" ]; then
+    # 1. Asegurar la carga de los módulos de PHP y Reescritura
+    $SUDO a2enmod php8 2>/dev/null
+    $SUDO a2enmod rewrite 2>/dev/null
+    
+    # 2. Forzar la relectura completa del sistema de archivos limpio
+    $SUDO systemctl daemon-reload
+    
+    # 3. Reiniciar Apache y MariaDB de forma asíncrona pero secuencial
+    $SUDO systemctl restart mariadb
+    $SUDO systemctl restart apache2
 else
     $SUDO systemctl restart $APACHE_S > /dev/null 2>&1
     if [ "$OS" == "Debian-based" ]; then SYS_MYSQL="mysql"; else SYS_MYSQL="mariadb"; fi

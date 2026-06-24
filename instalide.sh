@@ -108,7 +108,17 @@ obtener_hardware() {
 instalar_dependencias(){
     case $PERFIL in
         1)
-            if ! command -v apache2 &>/dev/null && ! command -v httpd &>/dev/null; then
+            # Comprobar si responde el puerto 80 local usando herramientas nativas de red
+            local apache_activo=0
+            if command -v ss &>/dev/null; then
+                ss -tlnp | grep -q ':80 ' && apache_activo=1
+            elif command -v netstat &>/dev/null; then
+                netstat -tln | grep -q ':80 ' && apache_activo=1
+            elif command -v lsof &>/dev/null; then
+                lsof -i :80 -sTCP:LISTEN -t &>/dev/null && apache_activo=1
+            fi
+
+            if [ "$apache_activo" -eq 0 ]; then
                 pintar "➜ No se detectó Apache en el sistema." "alerta"
                 if [ -f "$DIR_SCRIPT/installamp.sh" ]; then
                     read -p "¿Deseas lanzar installamp.sh ahora para instalar tu entorno LAMP? [S/n]: " LANZAR_LAMP
@@ -143,12 +153,117 @@ instalar_dependencias(){
     esac
 }
 
+aconsejar_ide() {
+    local sugerencia=""
+    local motivo=""
+
+    # Lógica de recomendación cruzando Hardware + Perfil de uso
+    if [ "$PERFIL_HARDWARE" = "Bajo" ]; then
+        if [ "$PERFIL" -eq 2 ]; then
+            sugerencia="Apache NetBeans"
+            motivo="Tu equipo tiene recursos limitados. NetBeans es un IDE clásico de Java que consume significativamente menos memoria RAM que IntelliJ IDEA."
+        else
+            sugerencia="VSCodium o Neovim"
+            motivo="Para entornos de bajos recursos, VSCodium prescinde de procesos pesados de telemetría. Si tus recursos son críticamente bajos, Neovim es la opción más fluida."
+        fi
+    else
+        case $PERFIL in
+            1)
+                sugerencia="Visual Studio Code o Cursor"
+                motivo="Cuentas con buen hardware. VS Code es el estándar para desarrollo Web, pero si buscas potenciar tu flujo con Inteligencia Artificial nativa, Cursor es el líder actual."
+                ;;
+            2)
+                sugerencia="IntelliJ IDEA Community"
+                motivo="Tienes recursos suficientes. IntelliJ es el rey indiscutible para Java profesional gracias a su motor avanzado de refactorización y autocompletado."
+                ;;
+            3)
+                sugerencia="Visual Studio Code"
+                motivo="Para desarrollo .NET en entornos multiplataforma, la combinación de VS Code junto al C# Dev Kit ofrece la experiencia más completa y ligera."
+                ;;
+            4)
+                sugerencia="Visual Studio Code o Neovim"
+                motivo="Para scripts y automatizaciones, VS Code con linters te avisará de errores antes de ejecutar. Si trabajas mucho por SSH en servidores, prioriza Neovim."
+                ;;
+        esac
+    fi
+
+    echo "------------------------------------------------------------------------------"
+    pintar "💡 RECOMENDACIÓN INTELIGENTE:" "exito"
+    echo "Basado en tu hardware ($PERFIL_HARDWARE) y tu perfil seleccionado, te aconsejamos usar: $sugerencia"
+    echo "Motivo: $motivo"
+    echo "------------------------------------------------------------------------------"
+}
+
+
+# ==============================================================================
+# 📦 INSTALADOR UNIVERSAL SNAP CON AUTO-CONFIGURACIÓN EN CALIENTE
+# ==============================================================================
 instalar_via_snap() {
-    if command -v snap &> /dev/null; then $SUDO snap install "$1" --classic
-    elif [ "$OS" = "Debian-based" ]; then
-        $SUDO apt-get update && $SUDO apt-get install -y snapd && $SUDO ln -s /var/lib/snapd/snap /snap 2>/dev/null
-        $SUDO snap install "$1" --classic
-    else pintar "Snap no disponible. Instale '$1' manualmente." "error"; exit 1; fi
+    local snap_pkg="$1"
+
+    # 1. Si snap ya está instalado, procedemos directo
+    if command -v snap &> /dev/null; then 
+        sudo snap install "$snap_pkg" --classic
+        return 0
+    fi
+
+    # 2. Si no está instalado, procedemos a configurarlo e instalarlo según el S.O.
+    pintar "📦 El motor de Snaps no está disponible. Instalándolo en caliente..." "alerta"
+    
+    if [ "$OS" = "Debian-based" ]; then
+        sudo apt-get update && sudo apt-get install -y snapd
+        sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null
+
+    elif [ "$OS" = "Fedora-based" ]; then
+        sudo dnf install -y snapd
+        sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null
+
+    elif [ "$OS" = "SUSE-based" ]; then
+        # openSUSE requiere añadir su repositorio oficial adaptándose dinámicamente a tu versión actual
+        local suse_ver="${VERSION_ID:-15.6}"
+        sudo zypper --non-interactive addrepo --refresh "https://opensuse.org{suse_ver}/" snappy 2>/dev/null
+        sudo zypper --gpg-auto-import-keys refresh
+        sudo zypper --non-interactive install snapd
+        sudo systemctl enable --now snapd snapd.apparmor
+
+    else
+        pintar "❌ Snap no está disponible ni se puede auto-instalar de forma segura en: $OS." "error"
+        pintar "Por favor, instale '$snap_pkg' manualmente a través de sus canales nativos." "alerta"
+        exit 1
+    fi
+
+    # Dar 3 segundos para que los sockets del demonio recién instalado inicien en el procesador
+    sleep 3
+
+    # 3. Intentar instalar el paquete ahora que el motor Snap está activo
+    pintar "➜ Instalando $snap_pkg de forma universal a través de Snap..." "menu"
+    sudo snap install "$snap_pkg" --classic
+    
+    if [ $? -ne 0 ]; then
+        pintar "❌ Error crítico: No se pudo instalar '$snap_pkg' incluso utilizando la contingencia de Snap." "error"
+        exit 1
+    fi
+}
+# ==============================================================================
+# 🔄 FUNCIÓN PUENTE: INTENTO NATIVO CON DELEGACIÓN DE CONCEPTO
+# ==============================================================================
+intentar_instalacion() {
+    local cmd_nativo="$1"
+    local snap_pkg="$2"
+    
+    # 1. Ejecutar de forma explícita usando sudo para asegurar privilegios
+    sudo $cmd_nativo
+    
+    # 2. Capturar el código de retorno. Si falla, llamamos a nuestro rescatador modular
+    if [ $? -ne 0 ]; then
+        pintar "⚠️ La instalación nativa falló o el repositorio no respondió. Recurriendo a Snap..." "alerta"
+        
+        # Delegar el control por completo en la función anterior
+        instalar_via_snap "$snap_pkg"
+        
+        # Si la función anterior no abortó el script, significa que tuvo éxito vía Snap
+        COMANDO_ARRANQUE="snap run $snap_pkg"
+    fi
 }
 ejecutar_instalacion_ide() {
     pintar "➜ Instalando $IDE_NAME mediante canales oficiales..." "menu"
@@ -162,27 +277,78 @@ ejecutar_instalacion_ide() {
     # 2. Flujo de instalación para macOS (Lógica Brew Cask aislada)
     if [ "$OS" = "macOS" ]; then
         case $IDE_NAME in
-            intellij) brew install --cask intellij-idea-community ;;
-            netbeans) brew install --cask netbeans ;;
-            vscode)   brew install --cask visual-studio-code ;;
-            vscodium) brew install --cask vscodium ;;
-            cursor)   brew install --cask cursor ;;
-            neovim)   brew install neovim ;;
+            intellij) 
+                brew install --cask intellij-idea-community
+                COMANDO_ARRANQUE="open -a 'IntelliJ IDEA Community Edition'" ;;
+            netbeans) 
+                brew install --cask netbeans
+                COMANDO_ARRANQUE="open -a 'NetBeans'" ;;
+            vscode)   
+                brew install --cask visual-studio-code
+                COMANDO_ARRANQUE="open -a 'Visual Studio Code'" ;;
+            vscodium) 
+                brew install --cask vscodium
+                COMANDO_ARRANQUE="open -a 'VSCodium'" ;;
+            cursor)   
+                brew install --cask cursor
+                COMANDO_ARRANQUE="open -a 'Cursor'" ;;
+            neovim)   
+                brew install neovim
+                COMANDO_ARRANQUE="nvim" ;;
         esac
     else
         # 3. Flujo de instalación para Linux
         case $IDE_NAME in
-            intellij) instalar_via_snap "intellij-idea-community" ;;
-            netbeans) instalar_via_snap "netbeans" ;;
+            intellij) 
+                if [ "$OS" = "SUSE-based" ]; then
+                    intentar_instalacion "zypper --non-interactive install intellij-idea-community" "intellij-idea-community"
+                    [ "$COMANDO_ARRANQUE" != "snap run intellij-idea-community" ] && COMANDO_ARRANQUE="intellij-idea-community"
+                else
+                    instalar_via_snap "intellij-idea-community"
+                    COMANDO_ARRANQUE="snap run intellij-idea-community"
+                fi ;;
+            netbeans) 
+                if [ "$OS" = "SUSE-based" ]; then
+                    intentar_instalacion "zypper --non-interactive install netbeans" "netbeans"
+                    [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
+                elif [ "$OS" = "Debian-based" ]; then
+                    intentar_instalacion "apt-get install -y netbeans" "netbeans"
+                    [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
+                else
+                    instalar_via_snap "netbeans"
+                    COMANDO_ARRANQUE="snap run netbeans"  
+                fi ;;
             vscode)
-                if [[ "$OS" =~ "Debian" || "$OS" =~ "Fedora" ]]; then 
-                    instalar_via_snap "code"
-                elif [ "$OS" = "Arch-based" ]; then 
+                if [ "$OS" = "Debian-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de Microsoft en Debian/Ubuntu..." "alerta"
+                    $SUDO apt-get update && $SUDO apt-get install -y wget gpg
+                    wget -qO- https://microsoft.com | gpg --dearmor | $SUDO tee /usr/share/keyrings/packages.microsoft.gpg > /dev/null
+                    echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://microsoft.com stable main" | $SUDO tee /etc/apt/sources.list.dir/vscode.list > /dev/null
+                    $SUDO apt-get update
+                    intentar_instalacion "apt-get install -y code" "code"
+                    [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
+                elif [ "$OS" = "Fedora-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de Microsoft en Fedora..." "alerta"
+                    $SUDO rpm --import https://microsoft.com
+                    echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://microsoft.com\nenabled=1\ngpgcheck=1\ngpgkey=https://microsoft.com" | $SUDO tee /etc/yum.repos.d/vscode.repo > /dev/null
+                    intentar_instalacion "dnf install -y code" "code"
+                    [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
+                elif [ "$OS" = "Arch-based" ]; then
+                    # Arch Linux incluye el binario libre 'code' en su repositorio oficial extra de la comunidad
                     $SUDO pacman -S --noconfirm code
+                    COMANDO_ARRANQUE="code"
+                elif [ "$OS" = "SUSE-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de Microsoft en openSUSE..." "alerta"
+                    $SUDO rpm --import https://packages.microsoft.com/keys/microsoft.asc
+                    echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ntype=rpm-md\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" | $SUDO tee /etc/zypp/repos.d/vscode.repo > /dev/null
+                    $SUDO zypper --gpg-auto-import-keys refresh
+                    #$SUDO zypper --non-interactive install code
+                    intentar_instalacion "zypper --non-interactive install code" "code"
+                    [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
                 fi ;;
             vscodium) 
-                instalar_via_snap "codium" ;;
-            
+                instalar_via_snap "codium"
+                COMANDO_ARRANQUE="snap run codium"  ;;
             cursor)
                 # MODIFICACIÓN DINÁMICA DE URLS SEGÚN LA DISTRIBUCIÓN (¡Aporte excelente!)
                 if [ "$OS" = "Debian-based" ]; then
@@ -204,10 +370,10 @@ ejecutar_instalacion_ide() {
                     chmod +x "$HOME/Applications/cursor.appimage"
                     pintar "✓ Cursor AppImage listo en $HOME/Applications/cursor.appimage" "exito"
                 fi
-                ;;
-                
+                COMANDO_ARRANQUE="$HOME/Applications/cursor.appimage" ;;
             neovim) 
-                $SUDO $INSTALL_CMD neovim ;;
+                $SUDO $INSTALL_CMD neovim 
+                COMANDO_ARRANQUE="nvim" ;;
         esac
     fi
 }
@@ -333,6 +499,11 @@ read -p "Introduce una opción [1-4]: " PERFIL
 # ==========================================
 instalar_dependencias
 
+# ==============================================================================
+# 🧠 NUEVO: CONSEJO AUTOMÁTICO ANTES DE LA ELECCIÓN
+# ==============================================================================
+aconsejar_ide
+
 # ==========================================
 # 🛠️ SELECCIÓN INTERACTIVA E INSTALACIÓN DEL IDE
 # ==========================================
@@ -375,7 +546,12 @@ if [ "$OS" != "macOS" ] && [[ "$PERFIL" -eq 1 || "$PERFIL" -eq 4 ]]; then
     if [ "$OS" = "Debian-based" ]; then $SUDO apt-get install -y nodejs npm python3-pip python3-venv 2>/dev/null
     elif [ "$OS" = "Fedora-based" ]; then $SUDO dnf install -y nodejs python3-pip 2>/dev/null
     elif [ "$OS" = "Arch-based" ]; then $SUDO pacman -S --noconfirm nodejs npm python-pip 2>/dev/null
-    elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install nodejs npm python3-pip 2>/dev/null; fi
+    #elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install nodejs npm python3-pip 2>/dev/null; fi
+    # Cambia esto en el bloque de SUSE-based:
+    elif [ "$OS" = "SUSE-based" ]; then 
+        # Usamos 'nodejs-default' y 'npm-default' para que openSUSE mapee automáticamente la versión LTS activa
+        $SUDO zypper --non-interactive install nodejs-default npm-default python3-pip 2>/dev/null
+    fi
 fi
 
 configurar_plugins_ide
@@ -383,3 +559,13 @@ configurar_plugins_ide
 SEGUNDOS_FIN=$(date +"%s")
 DURACION=$((SEGUNDOS_FIN - SEGUNDOS_INICIO))
 pintar "🎉 ¡Entorno configurado con éxito en ${DURACION} segundos!" "exito"
+
+echo "------------------------------------------------------------------------------"
+pintar "🚀 CÓMO ARRANCAR TU NUEVO IDE:" "menu"
+if [ -n "$COMANDO_ARRANQUE" ]; then
+    echo "• Para iniciar el entorno inmediatamente desde esta terminal, ejecuta:"
+    pintar "  $COMANDO_ARRANQUE" "exito"
+fi
+echo "• Si prefieres el modo gráfico, cierra sesión (Log out) y vuelve a entrar"
+echo "  para que tu escritorio indexe el nuevo acceso directo en la tecla Windows."
+echo "------------------------------------------------------------------------------"
