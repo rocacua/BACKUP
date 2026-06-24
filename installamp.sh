@@ -185,9 +185,10 @@ else
             UPDATE_CMD="zypper --non-interactive update"
             APACHE_S="apache2"
             DB_PKGS="mariadb mariadb-client"
-            PHP_PKGS="php8 php8-fpm php8-mysql php8-zip php8-gd php8-mbstring php8-curl php8-xml php8-bcmath ImageMagick php8-imagick"
+            #PHP_PKGS="php8 php8-fpm php8-mysql php8-zip php8-gd php8-mbstring php8-curl php8-xml php8-bcmath ImageMagick php8-imagick"
+            PHP_PKGS="apache2-mod_php8 php8 php8-mysql php8-gd php8-mbstring php8-xml php8-zip php8-openssl php8-curl"
             FZ_PKG="filezilla"
-            PMA_PKG="phpmyadmin"
+            PMA_PKG="phpMyAdmin"
             APACHE_USER="wwwrun"
             WEB_ROOT="/home/${USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
@@ -646,6 +647,13 @@ EOF
             # Asignar el contexto de seguridad web correcto de manera recursiva a tu carpeta de desarrollo
             $SUDO chcon -R -t httpd_user_content_t "$DIR_PRUEBA" 2>/dev/null
         fi
+        
+        # Activar el uso de PHP y el módulo de reescritura en la carga de Apache
+        $SUDO a2enmod php8 2>/dev/null
+        $SUDO a2enmod rewrite 2>/dev/null
+        
+        # Permitir el paso de Apache al directorio /home en la configuración global
+        $SUDO sed -i 's/<Directory \/>/& \n    Require all granted/' /etc/apache2/httpd.conf 2>/dev/null
 
         # 3. Mover el VHost a la ubicación nativa de SUSE
         # Asegúrate de que el script cree el vhost en vhosts.d/ en lugar de conf.d/ o sites-available/

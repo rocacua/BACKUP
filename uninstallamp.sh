@@ -9,6 +9,7 @@ fi
 # ==============================================================================
 # DETECCIÓN DE SITEMA OPERATIVO (IDÉNTICA AL INSTALADOR)
 # ==============================================================================
+REAL_USER=${SUDO_USER:-$USER}
 if [ "$(uname)" == "Darwin" ]; then
     OS="macOS"
     INSTALL_CMD="brew install"
@@ -20,7 +21,7 @@ if [ "$(uname)" == "Darwin" ]; then
     FZ_PKG="" 
     PMA_PKG="phpmyadmin"  
     APACHE_USER="_www"
-    WEB_ROOT="/Users/${USER}/workspace" 
+    WEB_ROOT="/Users/${REAL_USER}/workspace" 
     WEB_ROOT_DEFAULT="/opt/homebrew/var/www"  
     REMOVE_CMD="brew uninstall"
 else
@@ -45,7 +46,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="www-data"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
             REMOVE_CMD="apt-get purge -y" # Purge elimina configuraciones en Debian
     elif [[ "$ALL_IDS" =~ "fedora" || "$ALL_IDS" =~ "rhel" || "$ALL_IDS" =~ "centos" ]]; then
@@ -59,7 +60,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="apache"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
             REMOVE_CMD="dnf remove -y"
     elif [[ "$ALL_IDS" =~ "arch" || "$ALL_IDS" =~ "manjaro" || "$ALL_IDS" =~ "endeavouros" ]]; then
@@ -73,7 +74,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="http"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/srv/http"
             REMOVE_CMD="pacman -Rns --noconfirm" # Elimina paquetes y dependencias no usadas
     elif [[ "$ALL_IDS" =~ "suse" || "$ALL_IDS" =~ "opensuse" ]]; then
@@ -87,7 +88,7 @@ else
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="wwwrun"
-            WEB_ROOT="/home/${USER}/workspace"
+            WEB_ROOT="/home/${REAL_USER}/workspace"
             WEB_ROOT_DEFAULT="/var/www/html"
             REMOVE_CMD="zypper --non-interactive remove"
     else
