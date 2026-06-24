@@ -453,7 +453,12 @@ else
         # En Fedora, Arch, Suse y Mac, entramos como root (que tiene control total)
         DB_USER="root"
         DB_PASS=""
-        
+
+        # 🚀 CREAR USUARIO PRIMERO Y LUEGO OTORGAR PRIVILEGE (Obligatorio en MariaDB moderna)
+        $SUDO mysql -u root -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
+        $SUDO mysql -u root -e "GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';"
+        $SUDO mysql -u root -e "FLUSH PRIVILEGES;"
+
         MYSQL_QL="CREATE DATABASE IF NOT EXISTS $DB_NAME;
                   USE $DB_NAME;
                   CREATE TABLE IF NOT EXISTS mensajes (id INT AUTO_INCREMENT PRIMARY KEY, texto VARCHAR(255) NOT NULL);
@@ -623,19 +628,26 @@ try {
 EOF
     # 🚀 CORRECCIÓN DE USUARIO: Obtener de forma segura el usuario real que lanzó el script
     REAL_USER=${SUDO_USER:-$USER}
-    # Forzar el permiso de paso (+x) en las carpetas superiores para evitar el bloqueo del servicio Apache
-    $SUDO chmod 755 "/home/${REAL_USER}" 2>/dev/null
-    $SUDO chmod 755 "$WEB_ROOT" 2>/dev/null
-    # Asegurar lectura completa al directorio del proyecto de pruebas
-    $SUDO chmod -R 755 "$DIR_PRUEBA"
-    #$SUDO chown -R "${REAL_USER}:" "$DIR_PRUEBA"
 
     # Aplicar propiedad según la distribución para garantizar el código 200 OK
     if [ "$OS" = "SUSE-based" ]; then
-        # En openSUSE el grupo debe ser wwwrun para que Apache lea el contenido correctamente
+        # 1. Aplicar permisos físicos de herencia
+        $SUDO chmod 755 "/home/${REAL_USER}"
+        $SUDO chmod 755 "$WEB_ROOT"
+        $SUDO chmod -R 755 "$DIR_PRUEBA"
         $SUDO chown -R "${REAL_USER}:${APACHE_USER}" "$DIR_PRUEBA"
+        
+        # 2. 🛡️ DESACTIVAR EL BLOQUEO DE APPARMOR PARA APACHE (Evita el Error 403)
+        if [ -f /usr/sbin/aa-complain ]; then
+            $SUDO aa-complain /usr/sbin/httpd2 2>/dev/null
+            $SUDO systemctl restart apparmor
+        fi
     else
-        # En Debian/Ubuntu se hereda el grupo del usuario ejecutor o se deja libre
+        # Forzar el permiso de paso (+x) en las carpetas superiores para evitar el bloqueo del servicio Apache
+        $SUDO chmod 755 "/home/${REAL_USER}" 2>/dev/null
+        $SUDO chmod 755 "$WEB_ROOT" 2>/dev/null
+        # Asegurar lectura completa al directorio del proyecto de pruebas
+        $SUDO chmod -R 755 "$DIR_PRUEBA"
         $SUDO chown -R "${REAL_USER}:" "$DIR_PRUEBA"
     fi
 
