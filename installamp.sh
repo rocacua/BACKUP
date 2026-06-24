@@ -244,7 +244,7 @@ pintar "########################################################################
 # FLUJO DE TRABAJO (Sin interactividad a partir de aquí)
 # ==========================================
 pintar "1. Actualizando el sistema..." "menu"
-#$SUDO sh -c "$UPDATE_CMD"
+$SUDO sh -c "$UPDATE_CMD"
 
 pintar "2. Instalando Base de Datos ($DB_PKGS)..." "menu"
 $SUDO $INSTALL_CMD $DB_PKGS
@@ -489,7 +489,18 @@ else
     $SUDO mkdir -p "$DIR_PRUEBA"
     
     # Configuración del VHost estándar con permisos explícitos de directorio heredados
-    VHOST_CONF="<VirtualHost *:80>
+    if [ "$OS" = "SUSE-based" ]; then
+        VHOST_CONF="<VirtualHost *:80>
+        ServerName prueba.test
+        DocumentRoot \"$DIR_PRUEBA\"
+        <Directory \"$DIR_PRUEBA\">
+            Options Indexes FollowSymLinks MultiViews
+            AllowOverride All
+            Require all granted
+        </Directory>
+    </VirtualHost>"
+    else
+        VHOST_CONF="<VirtualHost *:80>
         ServerName prueba.test
         DocumentRoot \"$DIR_PRUEBA\"
         <Directory \"$DIR_PRUEBA\">
@@ -498,7 +509,7 @@ else
             Require all granted
         </Directory>
     </VirtualHost>"
-
+    fi
 
     # Guardar configuración y activarla de forma automatizada
     if [ "$OS" == "Debian-based" ]; then
@@ -617,7 +628,16 @@ EOF
     $SUDO chmod 755 "$WEB_ROOT" 2>/dev/null
     # Asegurar lectura completa al directorio del proyecto de pruebas
     $SUDO chmod -R 755 "$DIR_PRUEBA"
-    $SUDO chown -R "${REAL_USER}:" "$DIR_PRUEBA"
+    #$SUDO chown -R "${REAL_USER}:" "$DIR_PRUEBA"
+
+    # Aplicar propiedad según la distribución para garantizar el código 200 OK
+    if [ "$OS" = "SUSE-based" ]; then
+        # En openSUSE el grupo debe ser wwwrun para que Apache lea el contenido correctamente
+        $SUDO chown -R "${REAL_USER}:${APACHE_USER}" "$DIR_PRUEBA"
+    else
+        # En Debian/Ubuntu se hereda el grupo del usuario ejecutor o se deja libre
+        $SUDO chown -R "${REAL_USER}:" "$DIR_PRUEBA"
+    fi
 
     pintar "Host de prueba configurado en http://prueba.test" "exito"
 
@@ -638,6 +658,43 @@ else
     if [ "$OS" == "Debian-based" ]; then SYS_MYSQL="mysql"; else SYS_MYSQL="mariadb"; fi
     $SUDO systemctl restart $SYS_MYSQL > /dev/null 2>&1
 fi
+
+# ==============================================================================
+# 🔍 COMPROBACIÓN AUTOMÁTICA DE CONECTIVIDAD
+# ==============================================================================
+pintar " Verificando conectividad del host de prueba y la base de datos..." " menu"
+
+sleep 2
+TEST_URL="http://prueba.test"
+CODIGO_HTTP=0
+RESPUESTA_HTTP=""
+
+if command -v curl >/dev/null 2>&1; then
+    # Prueba utilizando curl
+    RESPUESTA_HTTP=$(curl -s -L --connect-timeout 5 "$TEST_URL")
+    CODIGO_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$TEST_URL")
+
+elif command -v wget >/dev/null 2>&1; then
+    # Prueba utilizando wget (guarda la salida en una variable y captura el código)
+    RESPUESTA_HTTP=$(wget -qO- --timeout=5 "$TEST_URL" 2>/dev/null)
+    # Wget no extrae el código HTTP fácilmente, lo simulamos validando si la respuesta tiene contenido
+    if [ -n "$RESPUESTA_HTTP" ]; then CODIGO_HTTP=200; fi
+
+else
+    pintar " No se pudo realizar la prueba automática (ni curl ni wget están instalados)." "alerta"
+fi
+
+# Validar los resultados si alguna de las herramientas funcionó
+if [ "$CODIGO_HTTP" -eq 200 ]; then
+    if [[ "$RESPUESTA_HTTP" =~ "Conexión a MySQL exitosa" ]]; then
+        pintar " ¡Test de conectividad superado con éxito!" " exito"
+    else
+        pintar " Servidor web activo, pero hay un problema de conexión con MySQL." "error"
+    fi
+elif [ "$CODIGO_HTTP" -ne 0 ]; then
+    pintar " Error de conexión al host de prueba (Código HTTP: $CODIGO_HTTP)." "error"
+fi
+
 
 # ⏱️ CÁLCULO DEL TIEMPO TOTAL TRANSCURRIDO
 # Tomamos los segundos acumulados en la variable interna $SECONDS
