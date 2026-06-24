@@ -487,6 +487,7 @@ else
         "macOS")        CONF_DIR="/opt/homebrew/etc/httpd/extra" ;;
         "Arch-based")   CONF_DIR="/etc/httpd/conf/extra" ;;
         "Fedora-based") CONF_DIR="/etc/httpd/conf.d" ;;
+        "SUSE-based") CONF_DIR="/etc/apache2/vhosts.d" ;;
         *)              CONF_DIR="/etc/apache2/sites-available" ;;
     esac
 
@@ -638,10 +639,19 @@ EOF
         $SUDO chown -R "${REAL_USER}:${APACHE_USER}" "$DIR_PRUEBA"
         
         # 2. 🛡️ DESACTIVAR EL BLOQUEO DE APPARMOR PARA APACHE (Evita el Error 403)
-        if [ -f /usr/sbin/aa-complain ]; then
-            $SUDO aa-complain /usr/sbin/httpd2 2>/dev/null
-            $SUDO systemctl restart apparmor
-        fi
+        # if [ -f /usr/sbin/aa-complain ]; then
+        #     $SUDO aa-complain /usr/sbin/httpd2 2>/dev/null
+        #     $SUDO systemctl restart apparmor
+        # fi
+        # 🔧 SOLUCIÓN EXCLUSIVA SUSE: Permitir de forma global que Apache sirva directorios alternativos
+        # Cambia 'Require all denied' a 'granted' en la raíz de configuración básica si existe el bloqueo
+        $SUDO sed -i 's/<Directory \/>/& \n    Require all granted/' /etc/apache2/httpd.conf 2>/dev/null
+        
+        # Activar mod_rewrite de Apache modificando las variables internas de openSUSE
+        $SUDO sed -i 's/APACHE_MODULES="/APACHE_MODULES="rewrite /g' /etc/sysconfig/apache2 2>/dev/null
+        
+        # Reiniciar Apache para aplicar los cambios de entorno globales
+        $SUDO systemctl restart apache2
     else
         # Forzar el permiso de paso (+x) en las carpetas superiores para evitar el bloqueo del servicio Apache
         $SUDO chmod 755 "/home/${REAL_USER}" 2>/dev/null
