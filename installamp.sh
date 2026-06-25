@@ -141,7 +141,7 @@ else
             UPDATE_CMD="apt-get update && apt-get upgrade -y"
             APACHE_S="apache2"
             DB_PKGS="mysql-server mysql-client"
-            PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick"
+            PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick php-json php-mysqlnd"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="www-data"
@@ -156,7 +156,7 @@ else
             UPDATE_CMD="dnf upgrade -y"
             APACHE_S="httpd"
             DB_PKGS="mariadb-server" # En Fedora 'mariadb-server' arrastra las herramientas de cliente automáticamente
-            PHP_PKGS="php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-pecl-imagick"
+            PHP_PKGS="php php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-json php-bcmath imagemagick php-pecl-imagick"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="apache"

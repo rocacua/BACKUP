@@ -95,7 +95,7 @@ obtener_espacio_libre_gb() {
         echo "20" # Valor seguro de contingencia si falla df
     fi
 }
-obtener_ram_max_gb() {
+obtener_ram_max_mb() {
     if [ "$(uname)" = "Darwin" ]; then
         local ram_bytes=$(sysctl -n hw.memsize)
         echo $((ram_bytes / 1024 / 1024))
@@ -109,7 +109,7 @@ obtener_hardware() {
     pintar "Espacio libre en Home: ${libre_gb} GB"
 
     # Mapeo de RAM compatible con Linux y macOS de forma nativa
-    ram_max=$(obtener_ram_max_gb)
+    ram_max=$(obtener_ram_max_mb)
     pintar "Memoria RAM total del sistema: ${ram_max} MB"
 
     # Clasificación del hardware del usuario

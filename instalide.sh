@@ -79,7 +79,7 @@ obtener_espacio_libre_gb() {
         echo "20" # Valor seguro de contingencia si falla df
     fi
 }
-obtener_ram_max_gb() {
+obtener_ram_max_mb() {
     if [ "$(uname)" = "Darwin" ]; then
         local ram_bytes=$(sysctl -n hw.memsize)
         echo $((ram_bytes / 1024 / 1024))
@@ -93,7 +93,7 @@ obtener_hardware() {
     pintar "Espacio libre en Home: ${libre_gb} GB"
 
     # Mapeo de RAM compatible con Linux y macOS de forma nativa
-    ram_max=$(obtener_ram_max_gb)
+    ram_max=$(obtener_ram_max_mb)
     pintar "Memoria RAM total del sistema: ${ram_max} MB"
 
     # Clasificación del hardware del usuario
@@ -228,7 +228,8 @@ instalar_via_snap() {
     elif [ "$OS" = "SUSE-based" ]; then
         # openSUSE requiere añadir su repositorio oficial adaptándose dinámicamente a tu versión actual
         local suse_ver="${VERSION_ID:-15.6}"
-        sudo zypper --non-interactive addrepo --refresh "https://opensuse.org{suse_ver}/" snappy 2>/dev/null
+        #sudo zypper --non-interactive addrepo --refresh "https://opensuse.org${suse_ver}/" snappy 2>/dev/null
+        sudo zypper --non-interactive addrepo --refresh "https://download.opensuse.org/repositories/system:/snappy/openSUSE_Leap_${suse_ver}" snappy 2>/dev/null
         sudo zypper --gpg-auto-import-keys refresh
         sudo zypper --non-interactive install snapd
         sudo systemctl enable --now snapd snapd.apparmor
