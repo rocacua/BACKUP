@@ -104,6 +104,13 @@ obtener_hardware() {
         PERFIL_HARDWARE="Medio"
     fi
     pintar "Perfil de Hardware estimado: $PERFIL_HARDWARE" "alerta"
+    APTO_IA_LOCAL="NO"
+    if [ "$ram_max" -ge 8000 ]; then
+        APTO_IA_LOCAL="SI" # Recomendado 8GB+
+    elif [ "$ram_max" -ge 4000 ]; then
+        APTO_IA_LOCAL="MINIMO" # 4GB-8GB con cautela
+    fi
+    pintar "Hardware apto para instalar IA local: $APTO_IA_LOCAL" "alerta"
 }
 instalar_dependencias(){
     case $PERFIL in
@@ -121,7 +128,7 @@ instalar_dependencias(){
             if [ "$apache_activo" -eq 0 ]; then
                 pintar "➜ No se detectó Apache en el sistema." "alerta"
                 if [ -f "$DIR_SCRIPT/installamp.sh" ]; then
-                    read -p "¿Deseas lanzar installamp.sh ahora para instalar tu entorno LAMP? [S/n]: " LANZAR_LAMP
+                    read -p "$(pintar "¿Deseas lanzar installamp.sh ahora para instalar tu entorno LAMP? [S/n]: " "prompt" 0)" LANZAR_LAMP
                     if [[ "$LANZAR_LAMP" =~ ^[Ss]?$ ]]; then
                         bash "$DIR_SCRIPT/installamp.sh"
                     fi
@@ -295,6 +302,12 @@ ejecutar_instalacion_ide() {
             neovim)   
                 brew install neovim
                 COMANDO_ARRANQUE="nvim" ;;
+            eclipse)
+                intentar_instalacion "brew install --cask eclipse-jee" "eclipse"
+                COMANDO_ARRANQUE="open -a Eclipse" ;;
+            android-studio)
+                intentar_instalacion "brew install --cask android-studio" "android-studio"
+                COMANDO_ARRANQUE="open -a 'Android Studio'" ;;
         esac
     else
         # 3. Flujo de instalación para Linux
@@ -309,28 +322,28 @@ ejecutar_instalacion_ide() {
                 fi ;;
             netbeans) 
                 if [ "$OS" = "SUSE-based" ]; then
-                    intentar_instalacion "zypper --non-interactive install netbeans" "netbeans"
+                    intentar_instalacion "zypper --non-interactive install netbeans" "netbeans --classic"
                     [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
                 elif [ "$OS" = "Debian-based" ]; then
-                    intentar_instalacion "apt-get install -y netbeans" "netbeans"
+                    intentar_instalacion "apt-get install -y netbeans" "netbeans --classic"
                     [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
                 else
-                    instalar_via_snap "netbeans"
+                    instalar_via_snap "netbeans --classic"
                     COMANDO_ARRANQUE="snap run netbeans"  
                 fi ;;
             vscode)
                 if [ "$OS" = "Debian-based" ]; then
                     pintar "➜ Configurando repositorio oficial de Microsoft en Debian/Ubuntu..." "alerta"
                     $SUDO apt-get update && $SUDO apt-get install -y wget gpg
-                    wget -qO- https://microsoft.com | gpg --dearmor | $SUDO tee /usr/share/keyrings/packages.microsoft.gpg > /dev/null
-                    echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://microsoft.com stable main" | $SUDO tee /etc/apt/sources.list.dir/vscode.list > /dev/null
+                    wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | $SUDO tee /usr/share/keyrings/packages.microsoft.gpg > /dev/null
+                    echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | $SUDO tee /etc/apt/sources.list.d/vscode.list > /dev/null
                     $SUDO apt-get update
                     intentar_instalacion "apt-get install -y code" "code"
                     [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
                 elif [ "$OS" = "Fedora-based" ]; then
                     pintar "➜ Configurando repositorio oficial de Microsoft en Fedora..." "alerta"
-                    $SUDO rpm --import https://microsoft.com
-                    echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://microsoft.com\nenabled=1\ngpgcheck=1\ngpgkey=https://microsoft.com" | $SUDO tee /etc/yum.repos.d/vscode.repo > /dev/null
+                    $SUDO rpm --import https://packages.microsoft.com/keys/microsoft.asc
+                    echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" | $SUDO tee /etc/yum.repos.d/vscode.repo > /dev/null
                     intentar_instalacion "dnf install -y code" "code"
                     [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
                 elif [ "$OS" = "Arch-based" ]; then
@@ -347,8 +360,34 @@ ejecutar_instalacion_ide() {
                     [ "$COMANDO_ARRANQUE" != "snap run code" ] && COMANDO_ARRANQUE="code"
                 fi ;;
             vscodium) 
-                instalar_via_snap "codium"
-                COMANDO_ARRANQUE="snap run codium"  ;;
+                if [ "$OS" = "Debian-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de VSCodium en Debian/Ubuntu..." "alerta"
+                    $SUDO apt-get update && $SUDO apt-get install -y wget gpg
+                    # Descarga de clave y configuración oficial del repositorio de PaulCarroty (CDN de VSCodium)
+                    wget -qO- https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg | gpg --dearmor | $SUDO tee /usr/share/keyrings/vscodium-archive-keyring.gpg > /dev/null
+                    echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg] https://download.vscodium.com/debs vscodium main" | $SUDO tee /etc/apt/sources.list.d/vscodium.list > /dev/null
+                    $SUDO apt-get update
+                    intentar_instalacion "apt-get install -y codium" "codium"
+                    [ "$COMANDO_ARRANQUE" != "snap run codium" ] && COMANDO_ARRANQUE="codium"
+                elif [ "$OS" = "Fedora-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de VSCodium en Fedora..." "alerta"
+                    $SUDO rpm --import https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
+                    echo -e "[vscodium]\nname=VSCodium\nbaseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/\nenabled=1\ngpgcheck=1\ngpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg" | $SUDO tee /etc/yum.repos.d/vscodium.repo > /dev/null
+                    intentar_instalacion "dnf install -y codium" "codium"
+                    [ "$COMANDO_ARRANQUE" != "snap run codium" ] && COMANDO_ARRANQUE="codium"
+                elif [ "$OS" = "SUSE-based" ]; then
+                    pintar "➜ Configurando repositorio oficial de VSCodium en openSUSE..." "alerta"
+                    $SUDO rpm --import https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
+                    echo -e "[vscodium]\nname=VSCodium\nbaseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/\nenabled=1\ngpgcheck=1\ngpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg" | $SUDO tee /etc/zypp/repos.d/vscodium.repo > /dev/null
+                    $SUDO zypper --gpg-auto-import-keys refresh
+                    intentar_instalacion "zypper --non-interactive install codium" "codium"
+                    [ "$COMANDO_ARRANQUE" != "snap run codium" ] && COMANDO_ARRANQUE="codium"
+                else
+                    # Fallback universal para otros sistemas usando confinamiento clásico para evitar problemas con compiladores
+                    instalar_via_snap "codium --classic"
+                    COMANDO_ARRANQUE="snap run codium"  
+                fi 
+                ;;
             cursor)
                 # MODIFICACIÓN DINÁMICA DE URLS SEGÚN LA DISTRIBUCIÓN (¡Aporte excelente!)
                 if [ "$OS" = "Debian-based" ]; then
@@ -357,11 +396,15 @@ ejecutar_instalacion_ide() {
                     curl -L "https://api2.cursor.sh/updates/download/golden/linux-${ARCH}-deb/cursor/latest" -o /tmp/cursor.deb
                     $SUDO apt-get update && $SUDO apt-get install -y /tmp/cursor.deb
                     rm -f /tmp/cursor.deb
+                    # Al ser nativo .deb, el comando global instalado en el sistema es 'cursor'
+                    COMANDO_ARRANQUE="cursor"
                 elif [ "$OS" = "Fedora-based" ]; then
                     pintar "➜ Descargando paquete oficial .rpm de Cursor..." "alerta"
                     curl -L "https://api2.cursor.sh/updates/download/golden/linux-${ARCH}-rpm/cursor/latest" -o /tmp/cursor.rpm
                     $SUDO dnf install -y /tmp/cursor.rpm
                     rm -f /tmp/cursor.rpm
+                    # Al ser nativo .rpm, el comando global instalado en el sistema es 'cursor'
+                    COMANDO_ARRANQUE="cursor"
                 else
                     # Para Arch, SUSE u otros, descargamos el AppImage limpio usando la URL directa
                     pintar "➜ Descargando Cursor oficial en formato AppImage..." "alerta"
@@ -369,27 +412,120 @@ ejecutar_instalacion_ide() {
                     curl -L "https://api2.cursor.sh/updates/download/golden/linux-${ARCH}/cursor/latest" -o "$HOME/Applications/cursor.appimage"
                     chmod +x "$HOME/Applications/cursor.appimage"
                     pintar "✓ Cursor AppImage listo en $HOME/Applications/cursor.appimage" "exito"
+                    # Solo en este caso el comando de arranque apunta a la ruta local del AppImage
+                    COMANDO_ARRANQUE="$HOME/Applications/cursor.appimage"
                 fi
-                COMANDO_ARRANQUE="$HOME/Applications/cursor.appimage" ;;
+                ;;
             neovim) 
-                $SUDO $INSTALL_CMD neovim 
-                COMANDO_ARRANQUE="nvim" ;;
+                if [ "$OS" = "Debian-based" ]; then
+                    pintar "➜ Descargando última versión estable de Neovim (AppImage oficial)..." "alerta"
+                    # Se descarga el binario precompilado oficial de GitHub para evitar paquetes APT obsoletos
+                    $SUDO wget -qO /usr/local/bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage 2>/dev/null
+                    if [ $? -eq 0 ] && [ -s /usr/local/bin/nvim ]; then
+                        # Hacer el archivo ejecutable de forma directa
+                        $SUDO chmod +x /usr/local/bin/nvim
+                        # Guardar el comando de arranque e informar del éxito
+                        COMANDO_ARRANQUE="nvim"
+                        pintar "✓ Neovim AppImage instalado con éxito en /usr/local/bin/nvim" "exito"
+                    else
+                        # Si falla la descarga, borramos el rastro y saltamos al gestor de paquetes nativo
+                        $SUDO rm -f /usr/local/bin/nvim
+                        pintar "⚠ Falló la descarga del AppImage. Instalando vía gestor de paquetes nativo..." "alerta"
+                        
+                        intentar_instalacion "apt-get install -y neovim" "neovim"
+                        [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
+                    fi
+                else
+                    # Fedora, Arch y SUSE sí mantienen versiones de Neovim muy actualizadas en sus repos nativos
+                    intentar_instalacion "$INSTALL_CMD neovim" "neovim"
+                    [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
+                fi
+                ;;
+            eclipse)
+                if [ "$OS" = "Debian-based" ] || [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ]; then
+                    pintar "➜ Instalando Eclipse de forma universal vía Snap..." "alerta"
+                    # Eclipse requiere confinamiento clásico para poder compilar y leer proyectos del disco duro
+                    instalar_via_snap "eclipse --classic"
+                    COMANDO_ARRANQUE="snap run eclipse"
+                elif [ "$OS" = "Arch-based" ]; then
+                    # Arch Linux mantiene Eclipse actualizado de forma nativa en sus repositorios principales
+                    pintar "➜ Instalando Eclipse nativo en Arch Linux..." "alerta"
+                    intentar_instalacion "pacman -S --noconfirm eclipse-java" "eclipse"
+                    COMANDO_ARRANQUE="eclipse"
+                else
+                    pintar "⚠ Sistema operativo no compatible para la instalación automática de Eclipse." "error"
+                fi
+                ;;
+            android-studio)
+                if [ "$OS" = "Debian-based" ] || [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ]; then
+                    pintar "➜ Instalando Android Studio de forma universal vía Snap..." "alerta"
+                    # Requiere --classic para poder interactuar con los dispositivos USB conectados (teléfonos reales)
+                    instalar_via_snap "android-studio --classic"
+                    COMANDO_ARRANQUE="snap run android-studio"
+                elif [ "$OS" = "Arch-based" ]; then
+                    pintar "➜ Instalando Android Studio desde el repositorio nativo en Arch Linux..." "alerta"
+                    # Arch sí lo empaqueta de forma comunitaria excelente
+                    intentar_instalacion "pacman -S --noconfirm android-studio" "android-studio"
+                    COMANDO_ARRANQUE="android-studio"
+                else
+                    pintar "⚠ Sistema operativo no compatible para la instalación de Android Studio." "error"
+                fi
+                ;;
+
+
         esac
     fi
 }
 
 
 configurar_plugins_ide() {
-    if [ "$IDE_NAME" = "vscode" ] || [ "$IDE_NAME" = "vscodium" ]; then
-        BIN_CMD="code"; [ "$IDE_NAME" = "vscodium" ] && BIN_CMD="codium"
+    # 1. Bloque unificado para editores basados en el motor de VS Code (Code, Codium, Cursor)
+    if [ "$IDE_NAME" = "vscode" ] || [ "$IDE_NAME" = "vscodium" ] || [ "$IDE_NAME" = "cursor" ]; then
+        
+        # Mapeo por defecto de comandos binarios
+        BIN_CMD="code"
+        [ "$IDE_NAME" = "vscodium" ] && BIN_CMD="codium"
+        
+        if [ "$IDE_NAME" = "cursor" ]; then
+            # Buscar el comando de consola de Cursor en las rutas habituales del sistema
+            if command -v cursor &> /dev/null; then
+                BIN_CMD="cursor"
+            elif [ -f "/usr/local/bin/cursor" ]; then
+                BIN_CMD="/usr/local/bin/cursor"
+            elif [ "$OS" = "macOS" ] && [ -f "/Applications/Cursor.app/Contents/Resources/app/bin/code" ]; then
+                # Truco de Mac: Acceder al binario interno de la app aunque no esté en el PATH
+                BIN_CMD="/Applications/Cursor.app/Contents/Resources/app/bin/code"
+            else
+                BIN_CMD=""
+            fi
+        fi
 
-        if command -v $BIN_CMD &> /dev/null; then
-            pintar "➜ Inyectando plugins del perfil elegido en el editor..." "menu"
-            $BIN_CMD --install-extension Codeium.codeium >/dev/null # IA Base Gratuita
+         # CORRECCIÓN: Validar de forma inteligente si es un comando del PATH o una ruta ejecutable directa
+        IS_VALID=0
+        if [ -n "$BIN_CMD" ]; then
+            if [[ "$BIN_CMD" == /* ]]; then
+                # Si empieza por /, es una ruta absoluta: verificamos si existe y es ejecutable
+                [ -x "$BIN_CMD" ] && IS_VALID=1
+            else
+                # Si es un comando simple, usamos command -v de forma segura
+                command -v "$BIN_CMD" &> /dev/null && IS_VALID=1
+            fi
+        fi
 
+        # Si encontramos una vía de comunicación con la CLI del IDE elegido
+        if [ "$IS_VALID" -eq 1 ]; then
+            pintar "➜ Inyectando plugins del perfil elegido en $IDE_NAME..." "menu"
+            
+            if [ "$IA_LOCAL_INSTALADA" = "SI" ]; then
+                [ "$IDE_NAME" != "cursor" ] && $BIN_CMD --install-extension Continue.continue >/dev/null
+            else
+                # Solo instalamos Codeium si NO es Cursor (Cursor ya trae su propia IA integrada de fábrica)
+                [ "$IDE_NAME" != "cursor" ] && $BIN_CMD --install-extension Codeium.codeium >/dev/null
+            fi
+            
             case $PERFIL in
                 1)  $BIN_CMD --install-extension xdebug.php-debug >/dev/null
-                    $BIN_CMD --install-extension bmewburn.vscode-next-php-intelophense >/dev/null
+                    $BIN_CMD --install-extension bmewburn.vscode-langserver-php >/dev/null
                     $BIN_CMD --install-extension dbaeumer.vscode-eslint >/dev/null
                     $BIN_CMD --install-extension esbenp.prettier-vscode >/dev/null ;;
                 2)  $BIN_CMD --install-extension vscjava.vscode-java-pack >/dev/null ;;
@@ -397,29 +533,92 @@ configurar_plugins_ide() {
                 4)  $BIN_CMD --install-extension timonwong.shellcheck >/dev/null
                     $BIN_CMD --install-extension mads-hartmann.bash-checker >/dev/null ;;
             esac
-            pintar "✓ Plugins inyectados correctamente." "exito"
+            pintar "✓ Plugins inyectados correctamente en $IDE_NAME." "exito"
+        else
+            if [ "$IDE_NAME" = "cursor" ]; then
+                pintar "⚠ No se pudo inyectar las extensiones de forma automática en Cursor." "alerta"
+                pintar "➜ Abre Cursor, pulsa Ctrl+Shift+P, ejecuta 'Install cursor command' y relanza el script." "info"
+            fi
+        fi
+    elif [ "$IDE_NAME" = "android-studio" ]; then
+        # Filtrar para que la configuración de KVM solo se ejecute en Linux
+        if [ "$OS" != "macOS" ]; then
+             pintar "➜ Configurando aceleración por hardware (KVM) para el emulador de Android..." "alerta"
+                    
+            # 1. Instalar los paquetes de virtualización según la distribución
+            if [ "$OS" = "Debian-based" ]; then
+                $SUDO apt-get update && $SUDO apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+            elif [ "$OS" = "Fedora-based" ]; then
+                $SUDO dnf install -y qemu-kvm libvirt virt-install
+            elif [ "$OS" = "SUSE-based" ]; then
+                $SUDO zypper --non-interactive install qemu-kvm libvirt
+            elif [ "$OS" = "Arch-based" ]; then
+                $SUDO pacman -S --noconfirm qemu-desktop libvirt
+            fi
+
+            # 2. Habilitar y arrancar el servicio de virtualización de inmediato
+            $SUDO systemctl enable --now libvirtd 2>/dev/null
+
+            # 3. Añadir el usuario actual al grupo kvm y libvirt para que tenga permisos sin ser root
+            # Usamos USER_REAL o el usuario actual si no se ejecuta bajo sudo directo
+            USUARIO_ACTUAL="${SUDO_USER:-$USER}"
+            
+            $SUDO usermod -aG kvm "$USUARIO_ACTUAL" 2>/dev/null
+            $SUDO usermod -aG libvirt "$USUARIO_ACTUAL" 2>/dev/null
+
+            pintar "✓ Dependencias de hardware configuradas." "exito"
+            pintar "⚠ NOTA: Para que el emulador funcione, es posible que debas reiniciar tu sesión de usuario." "alerta"
         fi
     fi
 }
 
 instalar_git() {
     if ! command -v git &>/dev/null; then
-        pintar "Git no está instalado. Procediendo con la instalación automática..." "alerta"
-        if [ "$OS" = "macOS" ]; then
-            brew install git
+        pintar "Git no está instalado. Es aconsejable para compartir archivos." "alerta"
+        echo -ne "$(pintar "¿Desea instalar Git? [S|n]: " "prompt" 0)"
+        read -r instala_git
+        instala_git=${instala_git:-"s"}
+        if [[ "$instala_git" =~ ^[Ss]$ ]] || [[ -z "$instala_git" ]]; then
+            if [ "$OS" = "macOS" ]; then
+                brew install git
+            else
+                # Usamos los comandos dinámicos que detectaste en la cabecera
+                $SUDO $UPDATE_CMD > /dev/null 2>&1
+                if [ "$OS" = "Debian-based" ]; then $SUDO apt-get install -y git
+                elif [ "$OS" = "Fedora-based" ]; then $SUDO dnf install -y git
+                elif [ "$OS" = "Arch-based" ]; then $SUDO pacman -S --noconfirm git
+                elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install git; fi
+            fi
+            pintar "Git se ha instalado correctamente: $(git --version)" "exito"
         else
-            # Usamos los comandos dinámicos que detectaste en la cabecera
-            $SUDO $UPDATE_CMD > /dev/null 2>&1
-            if [ "$OS" = "Debian-based" ]; then $SUDO apt-get install -y git
-            elif [ "$OS" = "Fedora-based" ]; then $SUDO dnf install -y git
-            elif [ "$OS" = "Arch-based" ]; then $SUDO pacman -S --noconfirm git
-            elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install git; fi
+            pintar "No se instalará Git" "alerta"
         fi
-        pintar "Git se ha instalado correctamente: $(git --version)" "exito"
     else
         pintar "Git ya está disponible en el sistema ($(git --version))." "exito"
     fi
 }
+
+instalar_ia_local() {
+    [ "$APTO_IA_LOCAL" = "NO" ] && return 0
+    [[ "$IDE_NAME" != "vscode" && "$IDE_NAME" != "vscodium" ]] && return 0
+    if [[ "$APTO_IA_LOCAL" == "MINIMO" ]]; then
+        pintar "Tu equipo puede ir lento si instalas IA" "alerta"
+    else
+        pintar "Tu equipo debería ir ligero aun que instales IA, si no abres muchos procesos." "alerta"
+    fi
+    echo ""
+    pintar "=== CONFIGURACIÓN DE IA EN LOCAL ===" "menu"
+    read -p "$(pintar "¿Instalar asistente IA local (Ollama+Qwen)?: [s/N]: " "prompt" 0)" RESPUESTA_IA
+    if [[ "$RESPUESTA_IA" =~ ^[Ss]$ ]]; then
+        curl -fsSL https://ollama.com/install.sh | sh
+        if command -v ollama &>/dev/null; then
+            ollama run qwen2.5-coder:1.5b --nowait >/dev/null 2>&1 &
+            IA_LOCAL_INSTALADA="SI"
+            pintar "✓ IA instalándose. Usa 'Continue' en el IDE." "exito"
+        fi
+    fi
+}
+
 
 # ==========================================
 # 🚀 INICIO DEL SCRIPT
@@ -444,12 +643,22 @@ else
 
     ALL_IDS="${ID} ${ID_LIKE}"
     ALL_IDS="${ALL_IDS,,}"
+    DISTRO_PRETY="${PRETTY_NAME}"
+    DISTRO_VERSION="${VERSION_ID}"
 
     if [[ "$ALL_IDS" =~ "ubuntu" || "$ALL_IDS" =~ "debian" || "$ALL_IDS" =~ "linuxmint" ]]; then
             OS="Debian-based"
             INSTALL_CMD="apt-get install -y"
             SUDO="sudo"
             UPDATE_CMD="apt-get update"
+            if [ -f /etc/debian_version ]; then
+                VERSION_BASE_DEBIAN=$(cat /etc/debian_version)
+            fi
+            # Truco infalible: usar lsb_release con parámetros específicos del upstream (la base)
+            if command -v lsb_release >/dev/null 2>&1; then
+                # Esto te devolverá "22.04", "24.04", etc., incluso ejecutándose dentro de Linux Mint o Pop!_OS
+                VERSION_BASE_UBUNTU=$(lsb_release -u -r 2>/dev/null | awk '{print $2}')
+            fi
     elif [[ "$ALL_IDS" =~ "fedora" || "$ALL_IDS" =~ "rhel" || "$ALL_IDS" =~ "centos" ]]; then
             OS="Fedora-based"
             INSTALL_CMD="dnf install -y"
@@ -471,6 +680,13 @@ else
     fi
 fi
 pintar "OS Detectado: $OS" "exito"
+pintar "Distro: $DISTRO_PRETY" "exito"
+if [[ ! -z "$VERSION_BASE_DEBIAN" ]]; then
+    pintar "Basado en Debian: $VERSION_BASE_DEBIAN" "exito"
+fi
+if [[ ! -z "$VERSION_BASE_UBUNTU" ]]; then
+    pintar "Basado en Ubuntu: $VERSION_BASE_UBUNTU" "exito"
+fi
 
 # ==========================================
 # 📊 RECOPILACIÓN DE HARDWARE (Telemetría)
@@ -482,7 +698,6 @@ obtener_hardware
 # ==========================================
 instalar_git
 
-
 # ==========================================
 # 🧠 SELECCIÓN DEL PERFIL DE USO
 # ==========================================
@@ -492,7 +707,7 @@ echo "1) Desarrollo Web (PHP, JS, Laravel, React, Python)"
 echo "2) Desarrollo Java Profesional (Java SE/EE, Spring Boot)"
 echo "3) Ecosistema Microsoft .NET (C#, Web APIs)"
 echo "4) SysAdmin / Automatización (Bash scripting, Terminal)"
-read -p "Introduce una opción [1-4]: " PERFIL
+read -p "$(pintar "Introduce una opción [1-4]: " "prompt" 0)" PERFIL
 
 # ==========================================
 # 🛠️ GESTIÓN DE DEPENDENCIAS POR PERFIL
@@ -510,23 +725,27 @@ aconsejar_ide
 echo ""
 pintar "=== SELECCIONA EL IDE A INSTALAR ===" "menu"
 if [ "$PERFIL" -eq 2 ]; then
-    echo "1) IntelliJ IDEA Community Edition"
-    echo "2) Apache NetBeans"
-    echo "3) Visual Studio Code"
+    echo "1) IntelliJ IDEA Community Edition (El rey de Java: autocompletado inteligente y moderno)"
+    echo "2) Apache NetBeans (Clásico y robusto: integración oficial excelente con Maven/Gradle)"
+    echo "3) Eclipse (Veterano y ultrapotente: ideal para proyectos grandes y entornos empresariales)"
+    echo "4) Visual Studio Code (Ligero y modular: requiere extensiones de Java para brillar)"
+    echo "5) Android Studio (El entorno oficial de Google para crear aplicaciones Android móviles)"
 else
     echo "1) Visual Studio Code (Oficial)"
     echo "2) VSCodium (Código abierto sin telemetría)"
     echo "3) Cursor (IDE enfocado a IA)"
     echo "4) Neovim (Terminal ligero)"
 fi
-echo "5) Salir"
-read -p "Elige una opción [1-5]: " SELECCION
+echo "0) Salir"
+read -p "$(pintar "Elige una opción [0-5]: " "prompt" 0)" SELECCION
 
 IDE_NAME="salir"
 if [ "$PERFIL" -eq 2 ]; then
     [ "$SELECCION" -eq 1 ] && IDE_NAME="intellij"
     [ "$SELECCION" -eq 2 ] && IDE_NAME="netbeans"
-    [ "$SELECCION" -eq 3 ] && IDE_NAME="vscode"
+    [ "$SELECCION" -eq 3 ] && IDE_NAME="eclipse"
+    [ "$SELECCION" -eq 4 ] && IDE_NAME="vscode"
+    [ "$SELECCION" -eq 5 ] && IDE_NAME="android-studio"
 else
     [ "$SELECCION" -eq 1 ] && IDE_NAME="vscode"
     [ "$SELECCION" -eq 2 ] && IDE_NAME="vscodium"
@@ -535,6 +754,10 @@ else
 fi
 if [ "$IDE_NAME" = "salir" ]; then exit 0; fi
 
+# 1. Ejecutar instalación de IA si procede
+instalar_ia_local
+
+# 2. Instalar el entorno de desarrollo elegido
 ejecutar_instalacion_ide
 
 
@@ -568,4 +791,9 @@ if [ -n "$COMANDO_ARRANQUE" ]; then
 fi
 echo "• Si prefieres el modo gráfico, cierra sesión (Log out) y vuelve a entrar"
 echo "  para que tu escritorio indexe el nuevo acceso directo en la tecla Windows."
+# Recordatorio dinámico si instalaron Ollama
+if [ "$IA_LOCAL_INSTALADA" = "SI" ]; then
+    pintar "🤖 IA LOCAL ACTIVA: Al abrir tu editor, verás la pestaña 'Continue'." "info"
+    echo "  El modelo Qwen2.5-Coder se está descargando en segundo plano."
+fi
 echo "------------------------------------------------------------------------------"
