@@ -525,7 +525,12 @@ configurar_plugins_ide() {
             
             case $PERFIL in
                 1)  $BIN_CMD --install-extension xdebug.php-debug >/dev/null
-                    $BIN_CMD --install-extension bmewburn.vscode-langserver-php >/dev/null
+                    # if [ "$IDE_NAME" = "vscode" ]
+                    #     $BIN_CMD --install-extension bmewburn.vscode-langserver-php >/dev/null
+                    # else
+                    #     $BIN_CMD --install-extension bmewburn.vscode-intelephense-client >/dev/null
+                    # fi
+                    $BIN_CMD --install-extension bmewburn.vscode-intelephense-client >/dev/null
                     $BIN_CMD --install-extension dbaeumer.vscode-eslint >/dev/null
                     $BIN_CMD --install-extension esbenp.prettier-vscode >/dev/null ;;
                 2)  $BIN_CMD --install-extension vscjava.vscode-java-pack >/dev/null ;;
