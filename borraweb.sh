@@ -91,6 +91,25 @@ ejecutar_escaneo() {
         local dominio=$(grep -i "ServerName" "$archivo" | awk '{print $2}' | head -n 1 | tr -d '[:space:]')
         local ruta=$(grep -i "DocumentRoot" "$archivo" | awk '{print $2}' | head -n 1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')
         
+        # PARCHE PARA ENTORNOS PROXY (Python / Flask / Node)
+        # Si no hay DocumentRoot, extraemos el nombre base del archivo .conf para localizarlo en el workspace
+        if [ -z "$ruta" ] && [ ! -z "$dominio" ]; then
+            local nombre_proyecto=$(basename "$archivo" .test.conf)
+            nombre_proyecto=$(basename "$nombre_proyecto" .conf)
+            
+            # Buscar si el directorio existe de forma típica en el workspace del usuario actual
+            if [ -d "$HOME/workspace/$nombre_proyecto" ]; then
+                ruta="$HOME/workspace/$nombre_proyecto"
+            # Alternativa secundaria: buscar la ruta dentro de los archivos de log definidos en ese vhost
+            else
+                local ruta_log=$(grep -i "ErrorLog" "$archivo" | awk '{print $2}' | head -n 1)
+                if [[ "$ruta_log" == *"/workspace/"* ]]; then
+                    # Si guardas los logs dentro del proyecto, los usamos para extraer la ruta raíz
+                    ruta=$(echo "$ruta_log" | sed 's|/var/log/.*||' | tr -d '[:space:]')
+                fi
+            fi
+        fi
+
         if [ ! -z "$dominio" ]; then
             SITIOS_VHOST["$contador,dominio"]="$dominio"
             SITIOS_VHOST["$contador,ruta"]="$ruta"
@@ -174,10 +193,23 @@ if [ ! -z "$DB_NAME" ] && command -v mysql &> /dev/null; then
             pintar "No se pudo eliminar la BD (verifica usuario/password)." "error"
         fi
     fi
+else
+    pintar "No se encontraron credenciales de base de datos" "alerta"
 fi
 
 # 6. PROCEDER CON EL BORRADO DEL SISTEMA DE ARCHIVOS Y CONFIGURACIÓN
 echo ""
+# === ANALIZAR EL VHOST Y LIBERAR EL PUERTO (Antes de borrar el archivo) ===
+if grep -q "ProxyPass" "$CONF_BORRAR" 2>/dev/null; then
+    # Extraer el puerto dinámicamente desde el archivo de configuración antes de eliminarlo
+    puerto_vhost=$(grep -oE "127.0.0.1:[0-9]+" "$CONF_BORRAR" | head -n 1 | cut -d':' -f2)
+    
+    if [ ! -z "$puerto_vhost" ]; then
+        pintar "➜ Liberando el puerto $puerto_vhost utilizado por el servicio proxy..." "alerta"
+        $SUDO fuser -k "$puerto_vhost/tcp" &>/dev/null
+    fi
+fi
+
 pintar "➜ Eliminando configuración del VirtualHost..." "menu"
 if [ "$OS" = "Debian-based" ] && command -v a2dissite &> /dev/null; then
     $SUDO a2dissite "$(basename "$CONF_BORRAR")" &>/dev/null
@@ -189,15 +221,17 @@ $SUDO sed -i "/$DOMINIO_BORRAR/d" /etc/hosts
 
 pintar "➜ Eliminando archivos físicos del sitio web..." "menu"
 RAIZ_PROYECTO="$RUTA_BORRAR"
-if [[ "$RUTA_BORRAR" == */public || "$RUTA_BORRAR" == */dist ]]; then
+if [[ "$RUTA_BORRAR" == */public || "$RUTA_BORRAR" == */dist || "$RUTA_BORRAR" == */build ]]; then
     RAIZ_PROYECTO=$(dirname "$RUTA_BORRAR")
 fi
 
+# Proceder con el borrado del directorio físico
 if [ -d "$RAIZ_PROYECTO" ] && [[ "$RAIZ_PROYECTO" != "$HOME" && "$RAIZ_PROYECTO" != "/" ]]; then
     $SUDO rm -rf "$RAIZ_PROYECTO"
     pintar "Directorio del proyecto eliminado con éxito." "exito"
 else
     pintar "Evitado borrado recursivo por ruta raíz inválida o protegida." "alerta"
+    pintar "No se encontró el directorio del proyecto, busque el lugar donde se ubica y borrelo." "error"
 fi
 
 pintar "➜ Aplicando cambios en el servidor web..." "menu"

@@ -449,8 +449,9 @@ EOF
 
             # PARCHE SELINUX: Permitir a Apache leer/escribir en tu directorio del HOME
             if command -v chcon &> /dev/null; then
-                pintar "➜ Ajustando políticas de SELinux para la ruta del proyecto..." "menu"
-                $SUDO chcon -R -t httpd_sys_rw_content_t "$path_web" 2>/dev/null
+                pintar "➜ Ajustando políticas globales de SELinux para Apache..." "menu"
+                # Habilitamos la directiva para que el servidor web conecte a MySQL sin denegaciones
+                $SUDO setsebool -P httpd_can_network_connect_db 1 2>/dev/null
                 # Permitir a Apache navegar a través de las carpetas padre del HOME
                 $SUDO setsebool -P httpd_enable_homedirs 1 2>/dev/null
                 # Permitir que Apache se conecte a bases de datos (Crucial para Fedora/RHEL)
@@ -458,8 +459,21 @@ EOF
                 # PARCHE CRÍTICO PARA FRAMEWORKS (Laravel/Symfony): Permitir a Apache usar el directorio /tmp del sistema
                 if [ "$OS" = "Fedora-based" ] && command -v setsebool &> /dev/null; then
                     $SUDO setsebool -P httpd_tmp_exec 1 2>/dev/null
-                    $SUDO setsebool -P httpd_enable_homedirs 1 2>/dev/null
+                    # Aplicar un chcon genérico de lectura a la carpeta /public que recibe esta función
+                    $SUDO chcon -R -t httpd_sys_content_t "$path_web" 2>/dev/null
                 fi
+
+                # DIRECTIVAS NECESARIAS PARA PYTHON
+                # Verificar si el archivo de configuración de proxy existe, si no, forzar su inclusión
+                if [ ! -f /etc/httpd/conf.modules.d/00-proxy.conf ]; then
+                    $SUDO dnf install -y httpd &>/dev/null
+                fi
+                # Parche de SELinux crítico para Proxies: Permitir a Apache redirigir tráfico hacia el puerto 5000
+                if command -v setsebool &> /dev/null; then
+                    pintar "➜ Autorizando en SELinux las conexiones de Proxy Inverso de Apache..." "menu"
+                    $SUDO setsebool -P httpd_can_network_connect 1 2>/dev/null
+                fi
+
             fi
         else
             $restart_cmd &> /dev/null
@@ -621,7 +635,7 @@ EOF
     try {
         \$pdo = new PDO('mysql:host=$db_host', '$db_user', '$db_pass');
         \$pdo->exec('CREATE DATABASE IF NOT EXISTS \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');
-        echo 'Base de datos verificada/creada correctamente.\n';
+        echo 'Base de datos verificada/creada correctamente.'. PHP_EOL;
     } catch (PDOException \$e) {
         echo 'Aviso: No se pudo auto-crear la base de datos: ' . \$e->getMessage() . '\n';
     }
@@ -712,7 +726,7 @@ crear_codeigniter() {
     try {
         \$pdo = new PDO('mysql:host=$db_host', '$db_user', '$db_pass');
         \$pdo->exec('CREATE DATABASE IF NOT EXISTS \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');
-        echo 'Base de datos verificada/creada correctamente.\n';
+        echo 'Base de datos verificada/creada correctamente.'. PHP_EOL;
     } catch (PDOException \$e) {
         echo 'Aviso: No se pudo auto-crear la base de datos: ' . \$e->getMessage() . '\n';
     }
@@ -793,30 +807,61 @@ crear_laravel() {
     fi
     if [ -f ".env" ]; then
         # Reemplazar los valores por defecto usando sed de forma segura
-        sed -i "s/DB_CONNECTION=.*/DB_CONNECTION=mysql/g" .env
-        sed -i "s/DB_HOST=.*/DB_HOST=$db_host/g" .env
-        sed -i "s/DB_PORT=.*/DB_PORT=3306/g" .env
-        sed -i "s/DB_DATABASE=.*/DB_DATABASE=$db_name/g" .env
-        sed -i "s/DB_USERNAME=.*/DB_USERNAME=$db_user/g" .env
-        sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$db_pass/g" .env
+        # sed -i "s/DB_CONNECTION=.*/DB_CONNECTION=mysql/g" .env
+        # sed -i "s/DB_HOST=.*/DB_HOST=$db_host/g" .env
+        # sed -i "s/DB_PORT=.*/DB_PORT=3306/g" .env
+        # sed -i "s/DB_DATABASE=.*/DB_DATABASE=$db_name/g" .env
+        # sed -i "s/DB_USERNAME=.*/DB_USERNAME=$db_user/g" .env
+        # sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$db_pass/g" .env
         
+        # Limpiar variables duplicadas o conflictivas que traigan las nuevas versiones de Laravel
+        sed -i '/^DB_/d' .env
+        
+        # Inyectar limpiamente la configuración de base de datos elegida
+        echo -e "\nDB_CONNECTION=mysql\nDB_HOST=$db_host\nDB_PORT=3306\nDB_DATABASE=$db_name\nDB_USERNAME=$db_user\nDB_PASSWORD=$db_pass" >> .env
+
         # Ajustar la URL local en el .env
         sed -i "s|APP_URL=.*|APP_URL=$url_web|g" .env
     fi
-    
+
     # 4. Forzar la generación de la clave única de encriptación de Laravel
     php artisan key:generate --ansi
+
+    # Limpiar cualquier caché previa de configuración para que use el nuevo .env de forma obligatoria
+    php artisan config:clear &>/dev/null
+
     # 5. Intentar crear la base de datos (Usando un script PHP rápido in-situ)
     pintar "➜ Creando la base de datos en MySQL si no existe..." "menu"
     php -r "
     try {
         \$pdo = new PDO('mysql:host=$db_host', '$db_user', '$db_pass');
         \$pdo->exec('CREATE DATABASE IF NOT EXISTS \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');
-        echo 'Base de datos verificada/creada correctamente.\n';
+        echo 'Base de datos verificada/creada correctamente.'. PHP_EOL;
     } catch (PDOException \$e) {
         echo 'Aviso: No se pudo auto-crear la base de datos: ' . \$e->getMessage() . '\n';
     }
     "
+
+    # -Asegurar permisos específicos y SELinux del motor de plantillas y caché de Laravel
+    pintar "➜ Asegurando permisos de escritura en Storage y Bootstrap/Cache..." "menu"
+    local web_user="www-data"
+    [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ] && web_user="apache"
+    [ "$OS" = "macOS" ] && web_user="_www"
+
+    # Cambiar propietario de grupo y dar permisos de lectura/escritura correctos
+    $SUDO chown -R $USER:$web_user storage bootstrap/cache 2>/dev/null
+    $SUDO chmod -R 775 storage bootstrap/cache 2>/dev/null
+
+    # APLICAR SELINUX CORRECTAMENTE A NIVEL DE DIRECTORIO DE TRABAJO (No solo al /public)
+    if [ "$OS" = "Fedora-based" ] && command -v semanage &>/dev/null; then
+        pintar "➜ Aplicando contextos de SELinux específicos para Laravel en Fedora..." "menu"
+        # Permitir lectura en todo el proyecto
+        $SUDO chcon -R -t httpd_sys_content_t ./ 2>/dev/null
+        # Permitir escritura estricta y persistente en storage y bootstrap/cache
+        $SUDO semanage fcontext -a -t httpd_sys_rw_content_t "$(pwd)/storage(/.*)?" &>/dev/null
+        $SUDO semanage fcontext -a -t httpd_sys_rw_content_t "$(pwd)/bootstrap/cache(/.*)?" &>/dev/null
+        $SUDO restorecon -R -v storage bootstrap/cache &>/dev/null
+    fi
 
     # 6. Ejecutar migraciones iniciales de Laravel
     pintar "➜ Ejecutando migraciones base de Laravel..." "menu"
@@ -833,14 +878,23 @@ crear_laravel() {
     # Restauramos la variable original para que el resumen final sea correcto
     path_web="$original_path_web"
 
-    # 8. Asegurar permisos específicos del motor de plantillas y caché de Laravel
+    # -APLICAR PERMISOS ESPECÍFICOS DE ESCRITURA (Siempre al final para que nada los sobrescriba)
     pintar "➜ Asegurando permisos de escritura en Storage y Bootstrap/Cache..." "menu"
     local web_user="www-data"
     [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ] && web_user="apache"
     [ "$OS" = "macOS" ] && web_user="_www"
 
-    $SUDO chgrp -R $web_user storage bootstrap/cache 2>/dev/null
-    $SUDO chmod -R ug+rwx storage bootstrap/cache 2>/dev/null
+    # Cambiar propietario y permisos locales
+    $SUDO chown -R $USER:$web_user storage bootstrap/cache 2>/dev/null
+    $SUDO chmod -R 775 storage bootstrap/cache 2>/dev/null
+
+    # Reglas persistentes de SELinux para las carpetas internas de Laravel
+    if [ "$OS" = "Fedora-based" ] && command -v semanage &>/dev/null; then
+        pintar "➜ Aplicando contextos de SELinux específicos para Laravel en Fedora..." "menu"
+        $SUDO semanage fcontext -a -t httpd_sys_rw_content_t "$(pwd)/storage(/.*)?" &>/dev/null
+        $SUDO semanage fcontext -a -t httpd_sys_rw_content_t "$(pwd)/bootstrap/cache(/.*)?" &>/dev/null
+        $SUDO restorecon -R -v storage bootstrap/cache &>/dev/null
+    fi
 
     # 8. Resumen final
     echo "------------------------------------------------------------------------------"
@@ -874,6 +928,12 @@ crear_symfony() {
     # symfony/skeleton + webapp-pack crea el entorno estándar completo para desarrollo web tradicional
     composer create-project symfony/skeleton "$nombre_carpeta" --no-interaction --ignore-platform-reqs
     
+    # Instalar el servidor web de desarrollo y herramientas de depuración para activar la pantalla de bienvenida
+    pintar "➜ Instalando componentes web y herramientas de depuración..." "menu"
+    #composer require symfony/webapp-pack --dev --quiet
+    composer require symfony/webapp-pack --dev --quiet --working-dir="$path_web"
+    #composer require symfony/twig-pack symfony/maker-bundle --dev --quiet
+
     # Asegurar la existencia del directorio limpio
     mkdir -p "$path_web"
     # Si por algún motivo la carpeta no existe, abortamos limpiamente en lugar de tirar errores en cascada
@@ -900,7 +960,7 @@ crear_symfony() {
     try {
         \$pdo = new PDO('mysql:host=$db_host', '$db_user', '$db_pass');
         \$pdo->exec('CREATE DATABASE IF NOT EXISTS \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');
-        echo 'Base de datos verificada/creada correctamente.\n';
+        echo 'Base de datos verificada/creada correctamente.'. PHP_EOL;
     } catch (PDOException \$e) {
         echo 'Aviso: No se pudo auto-crear la base de datos: ' . \$e->getMessage() . '\n';
     }
@@ -924,9 +984,86 @@ crear_symfony() {
     [ "$OS" = "macOS" ] && web_user="_www"
 
     if [ -d "var" ]; then
-        $SUDO chgrp -R $web_user var 2>/dev/null
-        $SUDO chmod -R ug+rwx var 2>/dev/null
+        # $SUDO chgrp -R $web_user var 2>/dev/null
+        # $SUDO chmod -R ug+rwx var 2>/dev/null
+        # Cambiar propietario y permisos de la carpeta var/ de Symfony
+        $SUDO chown -R $USER:$web_user var 2>/dev/null
+        $SUDO chmod -R 775 var 2>/dev/null
+    else
+        pintar "Directorio var no encontrado" "alerta"
     fi
+    
+    # Reglas persistentes de SELinux para el motor de Symfony en Fedora
+    if [ "$OS" = "Fedora-based" ] && command -v semanage &>/dev/null; then
+        pintar "➜ Aplicando contextos de SELinux específicos para Symfony en Fedora..." "menu"
+        # Conceder permisos permanentes de lectura/escritura a todo lo que esté en var/
+        $SUDO semanage fcontext -a -t httpd_sys_rw_content_t "$(pwd)/var(/.*)?" &>/dev/null
+        $SUDO restorecon -R -v var &>/dev/null
+    fi
+
+    # Crear el directorio del controlador si no existe
+    mkdir -p src/Controller
+
+    # Inyectar el controlador con la constante corregida
+    cat << EOF > src/Controller/HomeController.php
+<?php
+namespace App\Controller;
+
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Routing\Attribute\Route;
+use PDO;
+use PDOException;
+
+class HomeController
+{
+    #[Route('/', name: 'app_home')]
+    public function index(): Response
+    {
+        \$db_host = '$db_host';
+        \$db_name = '$db_name';
+        \$db_user = '$db_user';
+        \$db_pass = '$db_pass';
+        
+        \$status_db = '';
+        try {
+            \$pdo = new PDO("mysql:host=\$db_host;dbname=\$db_name;charset=utf8mb4", \$db_user, \$db_pass);
+            # CONTEXTO CORREGIDO: Usar PDO::ERRMODE_EXCEPTION de manera directa
+            \$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            \$status_db = '<span style="color: #28a745; font-weight: bold;">✔ CONEXIÓN EXITOSA</span>';
+        } catch (PDOException \$e) {
+            \$status_db = '<span style="color: #dc3545; font-weight: bold;">✘ ERROR DE CONEXIÓN: ' . htmlspecialchars(\$e->getMessage()) . '</span>';
+        }
+
+        \$html = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Symfony Automatizado</title>
+            <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f6f9; color: #333; margin: 0; padding: 40px; }
+                .card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); max-width: 600px; margin: 0 auto; }
+                h1 { color: #1a1a1a; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 0; }
+                p { font-size: 16px; line-height: 1.6; }
+                .status-box { background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #007bff; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class='card'>
+                <h1>🚀 ¡Symfony Desplegado con Éxito!</h1>
+                <p>El entorno automatizado mediante tu script se ha configurado de forma correcta en tu servidor Apache local.</p>
+                <div class='status-box'>
+                    <strong>Estado de la Base de Datos (\$db_name):</strong><br><br>
+                    \$status_db
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+
+        return new Response(\$html);
+    }
+}
+EOF
 
     # 7. Resumen final
     echo "------------------------------------------------------------------------------"
@@ -938,6 +1075,56 @@ crear_symfony() {
     echo "------------------------------------------------------------------------------"
 }
 
+generar_arranque_proyecto() {
+    local ruta_sitio="$1"
+    local tipo_entorno="$2"  # "node", "python" o "react"
+    local script_path="${ruta_sitio}/arrancar.sh"
+
+    case "${tipo_entorno,,}" in
+        "node")
+            cat << 'EOF' > "$script_path"
+#!/bin/bash
+# Script de arranque estandarizado para Node.js
+cd "$(dirname "$0")" || exit 1
+echo "🚀 Iniciando servidor Node.js (Express) en segundo plano..."
+nohup node app.js > node_ejecucion.log 2>&1 &
+echo "[OK] Servidor corriendo. Logs en: node_ejecucion.log"
+EOF
+            ;;
+        "python")
+            cat << 'EOF' > "$script_path"
+#!/bin/bash
+# Script de arranque estandarizado para Python + Flask
+cd "$(dirname "$0")" || exit 1
+echo "🚀 Activando entorno virtual e iniciando Flask en segundo plano..."
+source .venv/bin/activate
+nohup python app.py > python_ejecucion.log 2>&1 &
+deactivate
+echo "[OK] Servidor corriendo. Logs en: python_ejecucion.log"
+EOF
+            ;;
+        "react")
+            cat << 'EOF' > "$script_path"
+#!/bin/bash
+# Script de arranque para el entorno de desarrollo de React
+cd "$(dirname "$0")" || exit 1
+echo "🚀 Iniciando servidor de desarrollo de Vite para React..."
+echo "ℹ️ Abre tu navegador en el puerto que indique Vite para programar dinámicamente."
+npm run dev
+EOF
+            ;;
+    esac
+
+    # Conceder permisos de ejecución al script creado
+    chmod +x "$script_path" 2>/dev/null
+
+    # Ejecutar el arranque automáticamente de forma silenciosa para pasar el test del instalador (Solo Node y Python)
+    if [ "${tipo_entorno,,}" != "react" ]; then
+        "$script_path" &>/dev/null
+        sleep 2
+    fi
+}
+
 crear_react() {
     pintar "⚙️ Iniciando el despliegue automatizado de React JS (Vite)..." "menu"
 
@@ -947,28 +1134,81 @@ crear_react() {
         exit 1
     fi
 
-    # 2. El directorio debe ser gestionado por Vite para crear el esqueleto limpio
-    local path_padre=$(dirname "$path_web")
-    local nombre_carpeta=$(basename "$path_web")
+#INI ESTO FUNCIONABA, PERO REQUERIA INERACCIÓN 
+    # # 2. El directorio debe ser gestionado por Vite para crear el esqueleto limpio
+    # local path_padre=$(dirname "$path_web")
+    # local nombre_carpeta=$(basename "$path_web")
+    # cd "$path_padre" || exit 1
+    
+    # pintar "➜ Creando estructura base de React + Vite (JavaScript)..." "menu"
+    # # --yes evita preguntas interactivas; --template react fuerza el entorno React estándar
+    # npm create vite@latest "$nombre_carpeta" -- --template react --yes 
+    
+    # # Asegurar la existencia del directorio limpio
+    # mkdir -p "$path_web"
+    # # Si por algún motivo la carpeta no existe, abortamos limpiamente en lugar de tirar errores en cascada
+    # cd "$path_web" || { pintar "❌ Error grave: No se pudo acceder al directorio del proyecto: $path_web" "error"; exit 1; }
+    
+    # # 3. Instalar las dependencias iniciales del package.json
+    # pintar "➜ Instalando dependencias de Node de forma silenciosa (esto puede tardar)..." "menu"
+    # npm install --silent 
+
+    # # 4. Compilar la aplicación por primera vez para generar la carpeta /dist
+    # pintar "➜ Ejecutando la primera compilación de producción con Vite..." "menu"
+    # npm run build --silent 
+
+    # # 5. TRUCO DE ENRUTAMIENTO PARA EL VHOST
+    # # React compilado genera los archivos estáticos en /dist. Apuntamos Apache allí.
+    # local original_path_web="$path_web"
+    # path_web="${original_path_web}/dist"
+
+    # # Llamamos a tu función modular reutilizable para enlazar el dominio .test
+    # configurar_vhost_apache
+
+    # # Restauramos la variable original para el resumen
+    # path_web="$original_path_web"
+ #FIN ESTO FUNCIONABA, PERO REQUERIA INERACCIÓN    
+
+    # 2. Desglosar la ruta para trabajar con rutas relativas nativas de npm
+    local ruta_completa="$path_web"
+    local path_padre=$(dirname "$ruta_completa")
+    local nombre_carpeta=$(basename "$ruta_completa")
+
+    # Asegurar que el directorio padre existe
+    mkdir -p "$path_padre"
+
+    # PARCHE DE LIMPIEZA: Si ya existía la carpeta del proyecto, la eliminamos por completo
+    if [ -d "$ruta_completa" ]; then
+        $SUDO rm -rf "$ruta_completa"
+    fi
+
+    # === EL TRUCO CLAVE: Movernos al padre antes de crear ===
     cd "$path_padre" || exit 1
 
     pintar "➜ Creando estructura base de React + Vite (JavaScript)..." "menu"
-    # --yes evita preguntas interactivas; --template react fuerza el entorno React estándar
-    npm create vite@latest "$nombre_carpeta" -- --template react --yes
+    
+    # Lanzamos npx de forma relativa inyectando el salto de línea silencioso
+    echo "" | npx create-vite "$nombre_carpeta" --template react --yes &>/dev/null
 
-    # Asegurar la existencia del directorio limpio
-    mkdir -p "$path_web"
-    # Si por algún motivo la carpeta no existe, abortamos limpiamente en lugar de tirar errores en cascada
-    cd "$path_web" || { pintar "❌ Error grave: No se pudo acceder al directorio del proyecto: $path_web" "error"; exit 1; }
+    # === VALIDACIÓN Y SEGUIMIENTO ===
+    # Volvemos a usar la ruta absoluta para verificar que se creó el esqueleto
+    if [ ! -f "$ruta_completa/package.json" ]; then
+        pintar "❌ Error grave: No se pudo crear la estructura base de Vite en: $ruta_completa" "error"
+        exit 1
+    fi
+    
+    # Entramos definitivamente al directorio del proyecto para continuar el script
+    cd "$ruta_completa" || exit 1
 
     # 3. Instalar las dependencias iniciales del package.json
     pintar "➜ Instalando dependencias de Node de forma silenciosa (esto puede tardar)..." "menu"
-    npm install --silent
+    npm install --silent &>/dev/null
 
     # 4. Compilar la aplicación por primera vez para generar la carpeta /dist
     pintar "➜ Ejecutando la primera compilación de producción con Vite..." "menu"
-    npm run build --silent
-
+    # CORREGIDO: Usamos el parámetro nativo de npm para silenciar logs sin romper el comando de Vite
+    npm run build --loglevel silent &>/dev/null
+    
     # 5. TRUCO DE ENRUTAMIENTO PARA EL VHOST
     # React compilado genera los archivos estáticos en /dist. Apuntamos Apache allí.
     local original_path_web="$path_web"
@@ -980,6 +1220,8 @@ crear_react() {
     # Restauramos la variable original para el resumen
     path_web="$original_path_web"
 
+    generar_arranque_proyecto "$path_web" "react"
+
     # 6. Resumen final
     echo "------------------------------------------------------------------------------"
     pintar "🎉 ¡REACT JS CON VITE INSTALADO CON ÉXITO!" "exito"
@@ -988,8 +1230,13 @@ crear_react() {
     echo "Entorno de des: Ejecuta 'npm run dev' dentro de la ruta para iniciar Vite"
     echo "VirtualHost:    Configurado apuntando a /dist (Producción estática)"
     echo "------------------------------------------------------------------------------"
+    pintar "💡 ALTERNATIVAS PARA DESARROLLAR Y PROGRAMAR:" "menu"
+    echo "  Opción A (Automática/Rápida): Levanta el entorno de desarrollo Vite con el script:"
+    echo "    $path_web/arrancar.sh"
+    echo "  Opción B (Manual/Consola): Entra a la carpeta e inicia el compilador en tiempo real:"
+    echo "    cd $path_web && npm run dev"
+    echo "------------------------------------------------------------------------------"
 }
-
 
 crear_node() {
     pintar "⚙️ Iniciando el despliegue automatizado de Node.js (Express)..." "menu"
@@ -1074,17 +1321,20 @@ EOF
     if [ -d "$apache_conf_dir" ]; then
         pintar "➜ Configurando Apache como Proxy Inverso hacia el puerto 3000..." "menu"
         local vhost_file="$apache_conf_dir/${dominio_limpio}.conf"
-        
+        # Definir rutas de logs según el sistema operativo antes de crear el VirtualHost
+        local log_dir="/var/log/httpd"
+        [ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+
         $SUDO tee "$vhost_file" > /dev/null <<EOF
 <VirtualHost *:80>
     ServerName $dominio_limpio
 
     ProxyPreserveHost On
-    ProxyPass / http://localhost:3000/
-    ProxyPassReverse / http://localhost:3000/
+    ProxyPass / http://127.0.0.1:3000
+    ProxyPassReverse / http://127.0.0.1:3000
 
-    ErrorLog \${APACHE_LOG_DIR}/$dominio_limpio-error.log
-    CustomLog \${APACHE_LOG_DIR}/$dominio_limpio-access.log combined
+    ErrorLog $log_dir/$dominio_limpio-error.log
+    CustomLog $log_dir/$dominio_limpio-access.log combined
 </VirtualHost>
 EOF
 
@@ -1098,7 +1348,19 @@ EOF
         fi
 
         $restart_cmd &> /dev/null
+        [ "$OS" = "Fedora-based" ] && $SUDO setsebool -P httpd_can_network_connect 1 2>/dev/null
     fi
+    # Asegurar que estamos dentro de la carpeta antes de lanzar Node
+    cd "$path_web" || exit 1
+
+    # Arrancar la aplicación Express en segundo plano de forma silenciosa para el test
+    pintar "➜ Iniciando servidor Node.js (Express) en segundo plano..." "menu"
+    nohup node app.js > /dev/null 2>&1 &
+
+    # Darle 2 segundos a Node para levantar el puerto 3000 antes del curl del asistente
+    sleep 2
+
+    generar_arranque_proyecto "$path_web" "node"
 
     # 6. Resumen final
     echo "------------------------------------------------------------------------------"
@@ -1107,7 +1369,13 @@ EOF
     echo "URL local:      $url_web"
     echo "Puerto local:   Puerto 3000"
     echo "Modo de uso:    Ejecuta 'npm start' en la carpeta para levantar el servidor."
-    echo "VirtualHost:    Apache actúa como Proxy Inverso ($url_web -> localhost:3000)"
+    echo "VirtualHost:    Apache actúa como Proxy Inverso ($url_web -> 127.0.0.1:3000)"
+    echo "------------------------------------------------------------------------------"
+    pintar "💡 ALTERNATIVAS PARA ARRANCAR EL SERVICIO:" "menu"
+    echo "  Opción A (Automática/Rápida): Ejecuta el script nativo creado en la raíz:"
+    echo "    $path_web/arrancar.sh"
+    echo "  Opción B (Manual/Consola): Entra a la carpeta y levanta el proceso:"
+    echo "    cd $path_web && npm start"
     echo "------------------------------------------------------------------------------"
 }
 
@@ -1165,8 +1433,11 @@ EOF
 
     # 6. CONFIGURACIÓN DEL VHOST COMO PROXY INVERSO
     # Extraemos el host limpio de la URL
-    local dominio_limpio=$(echo "$url_web" | sed -e 's/http:\/\///g' -e 's/https:\/\///g' -e 's/\/.*//g')
-    
+    #local dominio_limpio=$(echo "$url_web" | sed -e 's/http:\/\///g' -e 's/https:\/\///g' -e 's/\/.*//g')
+    local dominio_limpio=$(echo "$url_web" | sed -e 's|^[^/]*//||' -e 's|/.*||')
+    # Si el usuario dejó la variable vacía y pulsó enter, usamos el valor por defecto
+    dominio_limpio="${dominio_limpio:-python.test}"
+
     # Registramos el dominio en /etc/hosts usando tus variables de cabecera
     if ! grep -q "$dominio_limpio" /etc/hosts; then
         echo "127.0.0.1   $dominio_limpio" | $SUDO tee -a /etc/hosts > /dev/null
@@ -1194,17 +1465,20 @@ EOF
     if [ -d "$apache_conf_dir" ]; then
         pintar "➜ Configurando Apache como Proxy Inverso hacia el puerto 5000..." "menu"
         local vhost_file="$apache_conf_dir/${dominio_limpio}.conf"
-        
+        # Definir rutas de logs según el sistema operativo antes de crear el VirtualHost
+        local log_dir="/var/log/httpd"
+        [ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+
         $SUDO tee "$vhost_file" > /dev/null <<EOF
 <VirtualHost *:80>
     ServerName $dominio_limpio
 
     ProxyPreserveHost On
-    ProxyPass / http://localhost:5000/
-    ProxyPassReverse / http://localhost:5000/
+    ProxyPass / http://127.0.0.1:5000
+    ProxyPassReverse / http://127.0.0.1:5000
 
-    ErrorLog \${APACHE_LOG_DIR}/$dominio_limpio-error.log
-    CustomLog \${APACHE_LOG_DIR}/$dominio_limpio-access.log combined
+    ErrorLog $log_dir/$dominio_limpio-error.log
+    CustomLog $log_dir/$dominio_limpio-access.log combined
 </VirtualHost>
 EOF
 
@@ -1218,7 +1492,17 @@ EOF
         fi
 
         $restart_cmd &> /dev/null
+        # Permitir a Apache realizar conexiones de red hacia el puerto 5000 (Imprescindible en Fedora)
+        [ "$OS" = "Fedora-based" ] && $SUDO setsebool -P httpd_can_network_connect 1 2>/dev/null
     fi
+
+    # Arrancar Flask en segundo plano de forma silenciosa para el test del script
+    pintar "➜ Iniciando servidor de desarrollo Flask en segundo plano..." "menu"
+    source .venv/bin/activate
+    nohup python app.py > /dev/null 2>&1 &
+    deactivate
+
+    generar_arranque_proyecto "$path_web" "python"
 
     # 7. Resumen final
     echo "------------------------------------------------------------------------------"
@@ -1228,7 +1512,13 @@ EOF
     echo "Puerto local:   Puerto 5000"
     echo "Entorno virt:   Activado y aislado en .venv/"
     echo "Modo de uso:    Activa con 'source .venv/bin/activate' y ejecuta 'python app.py'"
-    echo "VirtualHost:    Apache actúa como Proxy Inverso ($url_web -> localhost:5000)"
+    echo "VirtualHost:    Apache actúa como Proxy Inverso ($url_web -> 127.0.0.1:5000)"
+    echo "------------------------------------------------------------------------------"
+    pintar "💡 ALTERNATIVAS PARA ARRANCAR EL SERVICIO:" "menu"
+    echo "  Opción A (Automática/Rápida): Ejecuta el script nativo creado en la raíz:"
+    echo "    $path_web/arrancar.sh"
+    echo "  Opción B (Manual/Consola): Activa el entorno virtual y ejecuta el archivo:"
+    echo "    cd $path_web && source .venv/bin/activate && python app.py"
     echo "------------------------------------------------------------------------------"
 }
 
@@ -1382,13 +1672,16 @@ url_web="${url_web:-http://${crear_web}.test}"
 
 read -p "$(pintar "Ruta a tu sitio [${HOME}/workspace/${crear_web}]: " "prompt" 0)" path_web
 path_web="${path_web:-${HOME}/workspace/${crear_web}}"
-
+# === EL TRUCO CLAVE: Convertir la primera entrada en ruta absoluta ===
+path_web=$(readlink -m "$path_web")
 # '-d' para detectar directorios reales ya existentes y evitar sobreescritura accidental
 while [ -d "$path_web" ]; do
     pintar "El directorio elegido ya existe ($path_web)." "error"
     read -p "$(pintar "Por favor, seleccione una ruta que NO exista: " "prompt" 0)" path_web
     # Si lo deja vacío en el bucle, reasignar para evitar bucle roto
     path_web="${path_web:-${HOME}/workspace/${nombre_web}_nuevo}"
+    # === Volver a asegurar que si introduce otra ruta relativa dentro del bucle, se transforme ===
+    path_web=$(readlink -m "$path_web")
 done
 
 # Lanzar el proceso de creación estructurado
