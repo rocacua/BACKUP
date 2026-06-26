@@ -1,6 +1,6 @@
 @echo off
 :: ==============================================================================
-:: SCRIPT DE INSTALACI覰 Y APROVISIONAMIENTO ENTORNO DESARROLLO WINDOWS (XAMPP)
+:: SCRIPT DE INSTALACI脫N Y APROVISIONAMIENTO ENTORNO DESARROLLO WINDOWS (XAMPP)
 :: Basado en installamp.sh - Adaptado para Windows 11
 :: ==============================================================================
 CHCP 65001 >nul
@@ -11,29 +11,65 @@ set "DIR_SCRIPT=%~dp0"
 set "DIR_SCRIPT=%DIR_SCRIPT:~0,-1%"
 net session >nul 2>&1
 if %errorLevel% neq 0 (
-    echo [ALERTA] Elevando consola de comandos para instalaci髇...
+    echo [ALERTA] Elevando consola de comandos para instalaci贸n.
     powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 cd /d "%DIR_SCRIPT%"
 
-:: 2. CONFIGURACI覰 DE RUTAS
+:: 2. CONFIGURACI脫N DE RUTAS
 set "XAMPP_DIR=C:\xampp"
 set "HTDOCS_DIR=%XAMPP_DIR%\htdocs"
 set "MYSQL_DIR=%XAMPP_DIR%\mysql"
 set "HOSTS_FILE=%SystemRoot%\System32\drivers\etc\hosts"
 set "DIR_PRUEBA=%HTDOCS_DIR%\prueba"
 
-echo [1/3] Comprobando paquetes de software (Winget)...
+::echo [1/3] Comprobando paquetes de software (Winget).
+:: Fuerza la actualizaci贸n del origen oficial limpio antes de instalar
 :: Instalar FileZilla y XAMPP si no existen
-where filezilla >nul 2>&1 || winget install --id TimKosse.FileZilla.Client --silent --accept-source-agreements
-if not exist "%XAMPP_DIR%" (
-    echo [INFO] Descargando XAMPP...
-    winget install --id ApacheFriends.XAMPP.8.2 --silent --accept-source-agreements
-)
+::where filezilla >nul 2>&1 || winget install --id TimKosse.FileZilla.Client --silent --accept-source-agreements
+::if not exist "%XAMPP_DIR%" (
+::    echo [INFO] Descargando XAMPP.
+::    winget install --id ApacheFriends.XAMPP.8.2 --silent --accept-source-agreements
+::)
+
+
+
+
+
+
+echo [1/3] Comprobando paquetes de software...
+winget source update --accept-source-agreements >nul 2>&1
+
+:: 1. Instalaci贸n corporativa infalible de FileZilla
+where filezilla >nul 2>nul
+if %errorlevel% neq 0 echo [INFO] Descargando e instalando FileZilla Client...
+if %errorlevel% neq 0 winget install "FileZilla Client" --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity
+
+:: 2. Instalaci贸n limpia de XAMPP solventando el bloqueo anterior
+if exist "C:\xampp\apache\bin\httpd.exe" goto :siguiente_paso_amp
+
+echo [INFO] Iniciando instalador oficial de XAMPP (ApacheFriends.Xampp)...
+echo [ALERTA] Se abrir谩 una ventana flotante. Completa el asistente pulsando 'Next'.
+winget install --id ApacheFriends.Xampp.8.2 -e --source winget --accept-package-agreements --accept-source-agreements
+
+:: Pausa obligatoria para asegurar que el usuario complete el asistente gr谩fico
+echo.
+echo [INFO] Cuando el asistente de instalaci贸n de XAMPP haya FINALIZADO por completo,
+set /p "READY=presiona ENTER en esta consola para configurar los VirtualHosts... "
+
+:siguiente_paso_amp
+echo ? Estructura base de XAMPP detectada. Continuando con la configuraci贸n de rutas...
+
+
+
+
+
+
+
 
 :: 3. CONFIGURAR MYSQL Y PROYECTO
-echo [2/3] Configurando base de datos y proyecto PHP...
+echo [2/3] Configurando base de datos y proyecto PHP.
 if not exist "%DIR_PRUEBA%" mkdir "%DIR_PRUEBA%"
 (
 echo ^<?php
@@ -44,7 +80,7 @@ echo ?^>
 ) > "%DIR_PRUEBA%\index.php"
 
 :: 4. VIRTUALHOST Y HOSTS
-echo [3/3] Configurando VirtualHost en Apache...
+echo [3/3] Configurando VirtualHost en Apache.
 set "VHOST_FILE=%XAMPP_DIR%\apache\conf\extra\httpd-vhosts.conf"
 echo ^<VirtualHost *:80^>> "%VHOST_FILE%"
 echo     ServerName prueba.test>> "%VHOST_FILE%"
