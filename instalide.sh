@@ -418,30 +418,69 @@ ejecutar_instalacion_ide() {
                 fi
                 ;;
             neovim) 
-                if [ "$OS" = "Debian-based" ]; then
+#                if [ "$OS" = "Debian-based" ]; then
+#                    pintar "➜ Descargando última versión estable de Neovim (AppImage oficial)..." "alerta"
+#                    # Se descarga el binario precompilado oficial de GitHub para evitar paquetes APT obsoletos
+#                    $SUDO wget -qO /usr/local/bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage 2>/dev/null
+#                    if [ $? -eq 0 ] && [ -s /usr/local/bin/nvim ]; then
+#                        # Hacer el archivo ejecutable de forma directa
+#                        $SUDO chmod +x /usr/local/bin/nvim
+#                        # Guardar el comando de arranque e informar del éxito
+#                        COMANDO_ARRANQUE="nvim"
+#                        pintar "✓ Neovim AppImage instalado con éxito en /usr/local/bin/nvim" "exito"
+#                    else
+#                        # Si falla la descarga, borramos el rastro y saltamos al gestor de paquetes nativo
+#                        $SUDO rm -f /usr/local/bin/nvim
+#                        pintar "⚠ Falló la descarga del AppImage. Instalando vía gestor de paquetes nativo..." "alerta"
+#                        
+#                        #intentar_instalacion "apt-get install -y neovim" "neovim"
+#                        intentar_instalacion "apt-get install -y --no-install-recommends neovim" "neovim"
+#                        [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
+#                    fi
+#                else
+#                    # Fedora, Arch y SUSE sí mantienen versiones de Neovim muy actualizadas en sus repos nativos
+#                    intentar_instalacion "$INSTALL_CMD neovim" "neovim"
+#                    [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
+#                fi
+#                ;;
+                # Si es Debian o openSUSE, usamos AppImage para evitar paquetes corruptos o bloqueos de dependencias
+                if [ "$OS" = "Debian-based" ] || [ -f /usr/bin/zypper ]; then
                     pintar "➜ Descargando última versión estable de Neovim (AppImage oficial)..." "alerta"
-                    # Se descarga el binario precompilado oficial de GitHub para evitar paquetes APT obsoletos
+                    # Descarga directa del binario precompilado oficial de GitHub
                     $SUDO wget -qO /usr/local/bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage 2>/dev/null
+                    
                     if [ $? -eq 0 ] && [ -s /usr/local/bin/nvim ]; then
-                        # Hacer el archivo ejecutable de forma directa
                         $SUDO chmod +x /usr/local/bin/nvim
-                        # Guardar el comando de arranque e informar del éxito
                         COMANDO_ARRANQUE="nvim"
+                        # ENLACE SIMBÓLICO DE SALVAGUARDA: 
+                        # Si existía un binario roto o el sistema busca en /usr/bin, lo redirigimos al AppImage
+                        $SUDO ln -sf /usr/local/bin/nvim /usr/bin/nvim 2>/dev/null
                         pintar "✓ Neovim AppImage instalado con éxito en /usr/local/bin/nvim" "exito"
                     else
-                        # Si falla la descarga, borramos el rastro y saltamos al gestor de paquetes nativo
                         $SUDO rm -f /usr/local/bin/nvim
-                        pintar "⚠ Falló la descarga del AppImage. Instalando vía gestor de paquetes nativo..." "alerta"
+                        pintar "⚠ Falló la descarga del AppImage. Intentando instalación nativa..." "alerta"
                         
-                        intentar_instalacion "apt-get install -y neovim" "neovim"
+                        if [ -f /usr/bin/zypper ]; then
+                            intentar_instalacion "zypper in -y neovim" "neovim"
+                        else
+                            intentar_instalacion "apt-get install -y --no-install-recommends neovim" "neovim"
+                        fi
                         [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
                     fi
                 else
-                    # Fedora, Arch y SUSE sí mantienen versiones de Neovim muy actualizadas en sus repos nativos
-                    intentar_instalacion "$INSTALL_CMD neovim" "neovim"
+                    # Fedora y Arch mantienen versiones muy actualizadas y limpias en sus repos nativos
+                    local CMD_FINAL=""
+                    if [ -f /usr/bin/dnf ]; then
+                        CMD_FINAL="dnf install -y --setopt=install_weak_deps=False neovim"
+                    else
+                        CMD_FINAL="$INSTALL_CMD neovim"
+                    fi
+
+                    intentar_instalacion "$CMD_FINAL" "neovim"
                     [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
                 fi
                 ;;
+
             eclipse)
                 if [ "$OS" = "Debian-based" ] || [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ]; then
                     pintar "➜ Instalando Eclipse de forma universal vía Snap..." "alerta"

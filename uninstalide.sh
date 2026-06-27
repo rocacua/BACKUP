@@ -15,7 +15,7 @@ declare -r DIR_SCRIPT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null &
 fecha=$(date +%Y-%m-%d_%H-%M-%S)
 
 LOG_DIR="$DIR_SCRIPT/logs"
-LOG_FILE="$LOG_DIR/instalador_ide-${fecha}.log"
+LOG_FILE="$LOG_DIR/desinstalador_ide-${fecha}.log"
 
 if [[ ! -d "$LOG_DIR" ]]; then
     mkdir -p "$LOG_DIR" 2>/dev/null
@@ -23,7 +23,7 @@ fi
 
 if [[ ! -w "$LOG_DIR" ]]; then
     LOG_DIR="$HOME"
-    LOG_FILE="$LOG_DIR/instalador_ide-${fecha}.log"
+    LOG_FILE="$LOG_DIR/desinstalador_ide-${fecha}.log"
     mkdir -p "$LOG_DIR" 2>/dev/null
 fi
 
@@ -288,7 +288,11 @@ desinstalar_ide() {
             case "$target_ide" in
                 "vscode")         $SUDO apt-get purge -y code && $SUDO rm -f /etc/apt/sources.list.d/vscode.list 2>/dev/null ;;
                 "vscodium")       $SUDO apt-get purge -y codium && $SUDO rm -f /etc/apt/sources.list.d/vscodium.list 2>/dev/null ;;
-                "neovim")         $SUDO apt-get purge -y neovim 2>/dev/null ;;
+                "neovim")         
+                	# Si instalaste el AppImage en /usr/local/bin, lo borramos primero
+                	$SUDO rm -f /usr/local/bin/nvim 2>/dev/null
+                        $SUDO apt-get purge -y neovim 2>/dev/null 
+                        ;;
                 *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
             esac
         elif [ "$OS" = "Fedora-based" ]; then
@@ -303,7 +307,9 @@ desinstalar_ide() {
             case "$target_ide" in
                 "vscode")         $SUDO zypper --non-interactive remove code && $SUDO rm -f /etc/zypp/repos.d/vscode.repo 2>/dev/null ;;
                 "vscodium")       $SUDO zypper --non-interactive remove codium && $SUDO rm -f /etc/zypp/repos.d/vscodium.repo 2>/dev/null ;;
-                "neovim")         $SUDO zypper --non-interactive remove neovim 2>/dev/null ;;
+                "neovim")         # Forzar la eliminación de neovim y TODOS los parsers basura del sistema
+                                  $SUDO zypper --non-interactive remove neovim tree-sitter-vimdoc tree-sitter-query tree-sitter-vim tree-sitter-lua tree-sitter-c tree-sitter-markdown tree-sitter-python 2>/dev/null
+                                  ;;
                 *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
             esac
         elif [ "$OS" = "Arch-based" ]; then
@@ -318,6 +324,22 @@ desinstalar_ide() {
         fi
     fi
 
+    # Lógica de limpieza profunda específica para Neovim (AppImage y carpetas locales)
+    if [ "$target_ide" = "neovim" ]; then
+                if [ "$OS" != "macOS" ]; then
+            # 1. Eliminar el binario AppImage global si se instaló
+            $SUDO rm -f /usr/local/bin/nvim 2>/dev/null
+            
+            # 2. Romper el enlace simbólico de salvaguarda si apunta a nuestro AppImage
+            # Usamos -h para verificar si es un enlace simbólico antes de borrarlo deliberadamente
+            if [ -h /usr/bin/nvim ]; then
+                $SUDO rm -f /usr/bin/nvim 2>/dev/null
+            fi
+        fi
+
+        # 3. Purgar cachés locales, plugins descargados (Lazy, Packer) y estados de sesión del usuario
+        rm -rf "$HOME/.local/share/nvim" "$HOME/.local/state/nvim" "$HOME/.cache/nvim" 2>/dev/null
+    fi
     # Eliminar configuraciones residuales del usuario
     eliminar_configuracion "$target_ide"
     pintar "✓ Desinstalación de $target_ide completada." "exito"
