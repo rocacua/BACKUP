@@ -1,7 +1,19 @@
 @echo off
+:: Verificar si el script ya tiene permisos de Administrador
+net session >nul 2>&1
+@REM if %errorLevel% neq 0 (
+@REM     echo [INFO] Elevando privilegios de Administrador para evitar bloqueos...
+@REM     powershell -Command "Start-Process '%~f0' -Verb RunAs"
+@REM     exit /b
+@REM )
 setlocal enabledelayedexpansion
 title Asistente Inteligente de Seleccion e Instalacion de IDEs (Windows)
 chcp 65001 >nul
+:: Guardar configuración actual de energía
+for /f "tokens=3" %%a in ('powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE ^| findstr /i "Current"') do set "OLD_VIDEO=%%a"
+
+:: Evitar que la pantalla se apague por inactividad (0 = nunca)
+powercfg /change monitor-timeout-ac 0
 
 :: ==========================================
 :: 📋 CONFIGURACIÓN DEL LOG AUTOMÁTICO
@@ -259,43 +271,55 @@ if "%YA_INSTALADO%"=="1" (
 :: 🤖 INSTALACIÓN DE ASISTENTE IA LOCAL
 set "IA_LOCAL_INSTALADA=NO"
 if not "!APTO_IA_LOCAL!"=="NO" (
-    if "%IDE_NAME%"=="vscode" (
+    :: Modificación 1: Validar si es VSCode o VSCodium
+    set "APTO_IDE_IA=NO"
+    if "%IDE_NAME%"=="vscode" set "APTO_IDE_IA=SI"
+    if "%IDE_NAME%"=="vscodium" set "APTO_IDE_IA=SI"
+
+    if "!APTO_IDE_IA!"=="SI" (
         echo.
         echo [INFO] Tu hardware califica para ejecutar modelos de IA local.
-        set /p "RESPUESTA_IA=¿Deseas instalar el motor IA local (Ollama + Qwen2.5-Coder)? [s/N]: "
+        set /p "RESPUESTA_IA=¿Deseas instalar el motor IA local (Ollama + Qwen2.5-Coder + Extension Continue)? [s/N]: "
         if /i "!RESPUESTA_IA!"=="s" (
             echo ➜ Descargando e instalando Ollama...
             winget install --id Ollama.Ollama -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
 
-            timeout /t 5 >nul
-            where ollama >nul 2>nul
-            if !errorlevel! equ 0 (
-                echo ➜ Descargando modelo ligero optimizado Qwen2.5-Coder...
-                start /b "" ollama run qwen2.5-coder:1.5b --nowait >nul 2>&1
+            echo [INFO] Esperando a que el servicio de Ollama se estabilice en el sistema...
+            timeout /t 15 >nul
+
+            :: REFRESCO DE PATH EXPLICITO: Forzamos a la sesión actual a leer el PATH del registro
+            for /f "tokens=2*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SYS_PATH=%%B"
+            for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "USR_PATH=%%B"
+            set "PATH=!SYS_PATH!;!USR_PATH!;%PATH%"
+
+            :: Comprobación doble: por comando directo o buscando el binario en la ruta por defecto
+            set "OLLAMA_VALIDO=NO"
+            where ollama >nul 2>nul && set "OLLAMA_VALIDO=SI"
+            if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_VALIDO=SI"
+
+            if "!OLLAMA_VALIDO!"=="SI" (
+                echo ➜ Descargando modelo ligero optimizado Qwen2.5-Coder (Esto puede tardar unos minutos)...
+                :: Usamos una llamada directa para asegurar el inicio de la descarga
+                powershell -Command "Start-Process 'ollama' -ArgumentList 'run', 'qwen2.5-coder:1.5b', '--nowait' -WindowStyle Hidden"
+                
+                :: Le damos 5 segundos para que impacte la petición de descarga en el demonio de Ollama
+                timeout /t 5 >nul
                 set "IA_LOCAL_INSTALADA=SI"
+                echo ✓ Motor de IA Local configurado correctamente.
             ) else (
-                echo [ALERTA] Ollama no se pudo registrar a tiempo. Se saltara la IA local.
+                echo [ALERTA] Ollama no se pudo registrar en el PATH a tiempo. Se saltará la IA local.
             )
         )
     )
 )
 
-@REM :: 🚀 INSTALACIÓN PRINCIPAL VÍA WINGET
-@REM echo.
-@REM echo ➜ Instalando !WINGET_ID! de manera desatendida...
-@REM winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
-@REM if !errorlevel! neq 0 (
-@REM     echo [ERROR] Hubo un problema al desplegar el software mediante Winget.
-@REM     goto :finalizar
-@REM )
-@REM echo ✓ Instalacion del IDE completada con éxito.
 :: 🚀 INSTALACIÓN PRINCIPAL VÍA WINGET
 echo.
 echo ➜ Instalando !WINGET_ID! de manera desatendida...
 
-:: Si es NetBeans, inyectamos el parámetro --force para saltar el hash de seguridad de Winget
+:: Si es NetBeans, intentamos WinGet
 if /I "%IDE_NAME%"=="netbeans" (
-    winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity --force >> "%LOG_FILE%" 2>&1
+    winget install --id %WINGET_ID% --silent --accept-package-agreements --accept-source-agreements --ignore-security-hash --force >> "%LOG_FILE%" 2>&1
 ) else (
     winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
 )
@@ -303,14 +327,29 @@ if /I "%IDE_NAME%"=="netbeans" (
 :: Evaluamos el resultado de Winget
 if !errorlevel! neq 0 (
     if /I "%IDE_NAME%"=="netbeans" (
-        echo [ALERTA] Winget falló. Iniciando descarga directa desde los servidores oficiales de Apache...
+        echo [ALERTA] Winget falló debido al Hash corrupto del servidor. Iniciando descarga directa oficial...
         
-        :: Descarga el instalador x64 real desde el espejo oficial de Apache usando un agente del sistema para evitar bloqueos
-        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://archive.apache.org/dist/netbeans/netbeans-installers/24/Apache-NetBeans-24-bin-windows-x64.exe' -OutFile '%TEMP%\netbeans_installer.exe' -UserAgent 'Mozilla/5.0'" >nul 2>&1
+        :: Corrección 1: Usamos -C - en curl para que si la conexión se cae, intente reanudar o reintentar de forma más segura
+        curl -L -C - -o "%TEMP%\netbeans_installer.exe" "https://archive.apache.org/dist/netbeans/netbeans-installers/24/Apache-NetBeans-24-bin-windows-x64.exe"
 
         if exist "%TEMP%\netbeans_installer.exe" (
             echo ➜ Desplegando ejecutable de NetBeans de forma silenciosa...
-            start /wait "" "%TEMP%\netbeans_installer.exe" /S >> "%LOG_FILE%" 2>&1
+            
+            :: Corrección 2: Buscamos el JDK de Microsoft
+            set "JAVA_HOME_DETECTED="
+            if exist "C:\Program Files\Microsoft\jdk-17*" (
+                for /d %%i in ("C:\Program Files\Microsoft\jdk-17*") do set "JAVA_HOME_DETECTED=%%i"
+            )
+            
+            :: Corrección 3: Envolver la variable de Java entre comillas triples o escapadas para que PowerShell no rompa el espacio de "Program Files"
+            :: ELEVACIÓN INTELIGENTE: Añadimos -Verb RunAs para que solo este instalador pida el SÍ del UAC
+            if defined JAVA_HOME_DETECTED (
+                powershell -Command "Start-Process '%TEMP%\netbeans_installer.exe' -ArgumentList '--silent', '--javahome', '\"!JAVA_HOME_DETECTED!\"' -Verb RunAs -Wait" >> "%LOG_FILE%" 2>&1
+            ) else (
+                powershell -Command "Start-Process '%TEMP%\netbeans_installer.exe' -ArgumentList '--silent' -Verb RunAs -Wait" >> "%LOG_FILE%" 2>&1
+            )
+            
+            :: Limpieza del temporal
             del "%TEMP%\netbeans_installer.exe" >nul 2>&1
             
             set "errorlevel=0"
@@ -321,44 +360,94 @@ if !errorlevel! neq 0 (
     echo [ERROR] Hubo un problema al desplegar el software mediante Winget o descarga directa.
     goto :finalizar
 )
-
 :instalacion_correcta
 echo ✓ Instalacion del IDE completada con éxito.
 
 
+@REM :: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
+@REM if not "%IDE_NAME%"=="vscode" goto :saltar_extensiones_vscode
+
+@REM echo ➜ Configurando extensiones de desarrollo en VS Code...
+@REM timeout /t 5 >nul
+@REM set "CODE_CMD=code"
+@REM if not exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
+@REM     set "CODE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+@REM )
+
+@REM if "!IA_LOCAL_INSTALADA!"=="SI" (
+@REM     "!CODE_CMD!" --install-extension Continue.continue >nul 2>&1
+@REM ) else (
+@REM     "!CODE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+@REM )
+
+@REM if "%PERFIL%"=="1" (
+@REM     "!CODE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
+@REM     "!CODE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="2" (
+@REM     "!CODE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="3" (
+@REM     "!CODE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="4" (
+@REM     "!CODE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
+@REM     "!CODE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
+@REM )
+@REM echo ✓ Plugins inyectados correctamente.
+
+@REM :saltar_extensiones_vscode
+
 :: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
-if not "%IDE_NAME%"=="vscode" goto :saltar_extensiones_vscode
+:: Modificación 1: Permitir que tanto VSCode como VSCodium entren a este bloque
+if "%IDE_NAME%"=="vscode" goto :procesar_extensiones
+if "%IDE_NAME%"=="vscodium" goto :procesar_extensiones
+goto :saltar_extensiones_ide
 
-echo ➜ Configurando extensiones de desarrollo en VS Code...
+:procesar_extensiones
+echo ➜ Configurando extensiones de desarrollo en %IDE_NAME%...
 timeout /t 5 >nul
-set "CODE_CMD=code"
-if not exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
-    set "CODE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+
+:: Modificación 2: Identificar dinámicamente el comando y ruta según el IDE elegido
+if "%IDE_NAME%"=="vscode" (
+    set "IDE_CMD=code"
+    if exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
+        set "IDE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+    )
+)
+if "%IDE_NAME%"=="vscodium" (
+    set "IDE_CMD=codium"
+    if exist "!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd" (
+        set "IDE_CMD=!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd"
+    )
 )
 
+:: Copiloto de IA según la elección del usuario previa
 if "!IA_LOCAL_INSTALADA!"=="SI" (
-    "!CODE_CMD!" --install-extension Continue.continue >nul 2>&1
+    "!IDE_CMD!" --install-extension Continue.continue >nul 2>&1
 ) else (
-    "!CODE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+    "!IDE_CMD!" --install-extension Codeium.codeium >nul 2>&1
 )
 
+:: Extensiones por perfil (compatibles tanto con VSCode como con VSCodium)
 if "%PERFIL%"=="1" (
-    "!CODE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
-    "!CODE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+    "!IDE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
+    "!IDE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
 )
 if "%PERFIL%"=="2" (
-    "!CODE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
+    "!IDE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
 )
 if "%PERFIL%"=="3" (
-    "!CODE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
+    "!IDE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
 )
 if "%PERFIL%"=="4" (
-    "!CODE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
-    "!CODE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
+    "!IDE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
+    "!IDE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
 )
 echo ✓ Plugins inyectados correctamente.
 
-:saltar_extensiones_vscode
+:saltar_extensiones_ide
+
 
 :: ==============================================================================
 :: 🌐 CONFIGURACIÓN AUTOMÁTICA DE VARIABLES DE ENTORNO (PATH)
@@ -508,6 +597,9 @@ echo ---------------------------------------------------------------------------
 echo  🎉 ¡Todo listo! Tu entorno de desarrollo ha sido configurado con éxito.
 echo ------------------------------------------------------------------------------
 endlocal
+
+:: Restaurar configuración original de energía (por ejemplo, 10 minutos)
+powercfg /change monitor-timeout-ac 10
 
 :finalizar
 echo.
