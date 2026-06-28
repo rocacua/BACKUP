@@ -21,6 +21,44 @@ echo.
 
 call :log_y_pantalla "Iniciando asistente de instalacion en Windows..."
 
+:: ==============================================================================
+:: 🔍 DETECCIÓN PREVIA DE IDEs INSTALADOS
+:: ==============================================================================
+echo [INFO] Escaneando aplicaciones...
+set "INST_VSCODE=0" & set "MARK_VSCODE="
+set "INST_VSCODIUM=0" & set "MARK_VSCODIUM="
+set "INST_CURSOR=0" & set "MARK_CURSOR="
+set "INST_INTELLIJ=0" & set "MARK_INTELLIJ="
+set "INST_NETBEANS=0" & set "MARK_NETBEANS="
+set "INST_RIDER=0" & set "MARK_RIDER="
+set "INST_NOTEPAD=0" & set "MARK_NOTEPAD="
+
+:: Inicializar variables
+set "INST_VSCODE=0" & set "INST_VSCOMM=0" & set "INST_RIDER=0"
+set "MARK_VSCODE=" & set "MARK_VSCOMM=" & set "MARK_RIDER="
+
+:: Detección (VS Code, Codium, Cursor, JetBrains, NetBeans, Notepad++)
+where code >nul 2>nul && (set "INST_VSCODE=1" & set "MARK_VSCODE= [INSTALADO]")
+
+:: Detección avanzada Visual Studio (vswhere)
+set "VSWHERE_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "!VSWHERE_PATH!" (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE_PATH!" -products Microsoft.VisualStudio.Product.Community -property installationPath`) do (
+        if exist "%%i\Common7\IDE\devenv.exe" (set "INST_VSCOMM=1" & set "MARK_VSCOMM= [INSTALADO]")
+    )
+)
+:: Ruta alternativa por defecto 2022
+if "!INST_VSCOMM!"=="0" if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe" (set "INST_VSCOMM=1" & set "MARK_VSCOMM= [INSTALADO]")
+
+:: ... (resto de detecciones: vscodium, intellij, rider, etc., similar al anterior)
+if exist "%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd" (set "INST_VSCODE=1" & set "MARK_VSCODE= [INSTALADO]")
+where codium >nul 2>nul && (set "INST_VSCODIUM=1" & set "MARK_VSCODIUM= [INSTALADO]")
+if exist "%LOCALAPPDATA%\Programs\cursor\Cursor.exe" (set "INST_CURSOR=1" & set "MARK_CURSOR= [INSTALADO]")
+if exist "%ProgramFiles%\JetBrains\IntelliJ IDEA Community*\bin\idea64.exe" (set "INST_INTELLIJ=1" & set "MARK_INTELLIJ= [INSTALADO]")
+if exist "%ProgramFiles%\NetBeans*\netbeans\bin\netbeans64.exe" (set "INST_NETBEANS=1" & set "MARK_NETBEANS= [INSTALADO]")
+if exist "%ProgramFiles%\JetBrains\JetBrains Rider*\bin\rider64.exe" (set "INST_RIDER=1" & set "MARK_RIDER= [INSTALADO]")
+if exist "%ProgramFiles%\Notepad++\notepad++.exe" (set "INST_NOTEPAD=1" & set "MARK_NOTEPAD= [INSTALADO]")
+
 :: ==========================================
 :: 📦 VALIDACIÓN E INSTALACION DE GIT
 :: ==========================================
@@ -138,26 +176,26 @@ if "%PERFIL%"=="3" goto :menu_net
 if "%PERFIL%"=="4" goto :menu_sysadmin
 
 :menu_web
-echo  1] Visual Studio Code (Recomendado)
-echo  2] VSCodium (Privacidad / Ligero)
-echo  3] Cursor AI Editor
+echo  1] Visual Studio Code%MARK_VSCODE% (Recomendado)
+echo  2] VSCodium%MARK_VSCODIUM% (Privacidad / Ligero)
+echo  3] Cursor AI Editor%MARK_CURSOR%
 goto :menu_fin
 
 :menu_java
-echo  1] IntelliJ IDEA Community (Recomendado Java)
-echo  2] Apache NetBeans (Ligero)
-echo  3] Visual Studio Code
+echo  1] IntelliJ IDEA Community%MARK_INTELLIJ% (Recomendado Java)
+echo  2] Apache NetBeans%MARK_NETBEANS% (Ligero)
+echo  3] Visual Studio Code%MARK_VSCODE%
 goto :menu_fin
 
 :menu_net
-echo  1] Visual Studio Community (Completo .NET)
-echo  2] Visual Studio Code (Ligero)
-echo  3] JetBrains Rider
+echo  1] Visual Studio Community%MARK_VSCOMM% (Completo .NET)
+echo  2] Visual Studio Code%MARK_VSCODE% (Ligero)
+echo  3] JetBrains Rider%MARK_RIDER%
 goto :menu_fin
 
 :menu_sysadmin
-echo  1] Visual Studio Code (Automatizacion y Scripts)
-echo  2] Notepad++ (Ultra ligero)
+echo  1] Visual Studio Code%MARK_VSCODE% (Automatizacion y Scripts)
+echo  2] Notepad++%MARK_NOTEPAD% (Ultra ligero)
 goto :menu_fin
 
 :menu_fin
@@ -171,29 +209,49 @@ if "%SELECCION%"=="0" goto :finalizar
 
 set "WINGET_ID="
 set "IDE_NAME="
+set "YA_INSTALADO=0"
 
+:: ------------------------------------------------------------------------------
+:: PROCESAR SELECCIÓN SEGÚN EL PERFIL ACTIVO
+:: ------------------------------------------------------------------------------
+:: --- PERFIL 1: WEB ---
 if "%PERFIL%"=="1" (
-    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode"
-    if "%SELECCION%"=="2" set "WINGET_ID=VSCodium.VSCodium" & set "IDE_NAME=vscodium"
-    if "%SELECCION%"=="3" set "WINGET_ID=Anysphere.Cursor" & set "IDE_NAME=cursor"
+    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode" & set "YA_INSTALADO=%INST_VSCODE%"
+    if "%SELECCION%"=="2" set "WINGET_ID=VSCodium.VSCodium" & set "IDE_NAME=vscodium" & set "YA_INSTALADO=%INST_VSCODIUM%"
+    if "%SELECCION%"=="3" set "WINGET_ID=Anysphere.Cursor" & set "IDE_NAME=cursor" & set "YA_INSTALADO=%INST_CURSOR%"
 )
+:: --- PERFIL 2: JAVA ---
 if "%PERFIL%"=="2" (
-    if "%SELECCION%"=="1" set "WINGET_ID=JetBrains.IntelliJIDEA.Community" & set "IDE_NAME=intellij"
-    if "%SELECCION%"=="2" set "WINGET_ID=Apache.NetBeans" & set "IDE_NAME=netbeans"
-    if "%SELECCION%"=="3" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode"
+    if "%SELECCION%"=="1" set "WINGET_ID=JetBrains.IntelliJIDEA.Community" & set "IDE_NAME=intellij" & set "YA_INSTALADO=%INST_INTELLIJ%"
+    if "%SELECCION%"=="2" set "WINGET_ID=Apache.NetBeans" & set "IDE_NAME=netbeans" & set "YA_INSTALADO=%INST_NETBEANS%"
+    if "%SELECCION%"=="3" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode" & set "YA_INSTALADO=%INST_VSCODE%"
 )
+:: --- PERFIL 3: .NET ---
 if "%PERFIL%"=="3" (
-    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudio.Community" & set "IDE_NAME=visualstudio"
-    if "%SELECCION%"=="2" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode"
-    if "%SELECCION%"=="3" set "WINGET_ID=JetBrains.Rider" & set "IDE_NAME=rider"
+    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudio.Community" & set "IDE_NAME=vscommunity" & set "YA_INSTALADO=%INST_VSCOMM%"
+    if "%SELECCION%"=="2" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode" & set "YA_INSTALADO=%INST_VSCODE%"
+    if "%SELECCION%"=="3" set "WINGET_ID=JetBrains.Rider" & set "IDE_NAME=rider" & set "YA_INSTALADO=%INST_RIDER%"
 )
+:: --- PERFIL 4: SYSADMIN ---
 if "%PERFIL%"=="4" (
-    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode"
-    if "%SELECCION%"=="2" set "WINGET_ID=Notepad++.Notepad++" & set "IDE_NAME=notepadpp"
+    if "%SELECCION%"=="1" set "WINGET_ID=Microsoft.VisualStudioCode" & set "IDE_NAME=vscode" & set "YA_INSTALADO=%INST_VSCODE%"
+    if "%SELECCION%"=="2" set "WINGET_ID=Notepad++.Notepad++" & set "IDE_NAME=notepadpp" & set "YA_INSTALADO=%INST_NOTEPAD%"
+)
+:: ------------------------------------------------------------------------------
+:: VALIDAR SI EL IDE ELEGIDO YA EXISTE
+:: ------------------------------------------------------------------------------
+if "%WINGET_ID%"=="" (
+    echo [ALERTA] Opción no válida. Try again.
+    pause
+    goto :menu_fin
 )
 
-if "%WINGET_ID%"=="" (
-    echo [ERROR] Seleccion invalida.
+if "%YA_INSTALADO%"=="1" (
+    echo.
+    echo ------------------------------------------------------------------------------
+    echo [ALERTA] ¡El IDE seleccionado ya está instalado en este sistema!
+    echo [ALERTA] Se cancelará el proceso para evitar conflictos o sobrescrituras.
+    echo ------------------------------------------------------------------------------
     goto :finalizar
 )
 
@@ -233,33 +291,165 @@ if !errorlevel! neq 0 (
 echo ✓ Instalacion del IDE completada con esco.
 
 :: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
+if not "%IDE_NAME%"=="vscode" goto :saltar_extensiones_vscode
+
+echo ➜ Configurando extensiones de desarrollo en VS Code...
+timeout /t 5 >nul
+set "CODE_CMD=code"
+if not exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
+    set "CODE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+)
+
+if "!IA_LOCAL_INSTALADA!"=="SI" (
+    "!CODE_CMD!" --install-extension Continue.continue >nul 2>&1
+) else (
+    "!CODE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+)
+
+if "%PERFIL%"=="1" (
+    "!CODE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
+    "!CODE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+)
+if "%PERFIL%"=="2" (
+    "!CODE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
+)
+if "%PERFIL%"=="3" (
+    "!CODE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
+)
+if "%PERFIL%"=="4" (
+    "!CODE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
+    "!CODE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
+)
+echo ✓ Plugins inyectados correctamente.
+
+:saltar_extensiones_vscode
+
+:: ==============================================================================
+:: 🌐 CONFIGURACIÓN AUTOMÁTICA DE VARIABLES DE ENTORNO (PATH)
+:: ==============================================================================
+echo [INFO] Optimizando variables de entorno del sistema (PATH)...
+
+set "RUTA_A_ANADIR="
+
+:: 1. Localizar la ruta según el IDE que se acaba de instalar
+:: Saltamos directamente a la etiqueta del IDE seleccionado para evitar bucles pesados
+if "%IDE_NAME%"=="notepadpp" goto :path_notepad
+if "%IDE_NAME%"=="intellij" goto :path_intellij
+if "%IDE_NAME%"=="rider" goto :path_rider
+if "%IDE_NAME%"=="netbeans" goto :path_netbeans
+goto :path_procesar
+
+:path_notepad
+if exist "%ProgramFiles%\Notepad++" set "RUTA_A_ANADIR=%ProgramFiles%\Notepad++"
+goto :path_procesar
+
+:path_intellij
+for /d %%d in ("%ProgramFiles%\JetBrains\IntelliJ IDEA Community*") do (
+    set "RUTA_A_ANADIR=%%d\bin"
+)
+goto :path_procesar
+
+:path_rider
+for /d %%d in ("%ProgramFiles%\JetBrains\JetBrains Rider*") do (
+    set "RUTA_A_ANADIR=%%d\bin"
+)
+goto :path_procesar
+
+:path_netbeans
+for /d %%d in ("%ProgramFiles%\NetBeans*") do (
+    set "RUTA_A_ANADIR=%%d\netbeans\bin"
+)
+goto :path_procesar
+
+:path_procesar
+if "%RUTA_A_ANADIR%"=="" goto :sysadmin_check
+
+:: Comprobar duplicados de forma segura sin romper la consola
+echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%;" >nul 2>&1
+if !errorlevel! neq 0 (
+    echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%\" >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo ➜ Añadiendo "%RUTA_A_ANADIR%" al PATH del Sistema...
+        :: Usamos PowerShell para saltar el bloqueo del registro de SETX
+        powershell -Command "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';%RUTA_A_ANADIR%', 'Machine')" >nul 2>&1
+        set "PATH=!PATH!;%RUTA_A_ANADIR%"
+        echo ✓ PATH del sistema actualizado.
+    )
+)
+
+:sysadmin_check
+
+:: ==============================================================================
+:: ⚙ REQUISITOS ADICIONALES PARA SYSADMIN (Azure / AWS)
+:: ==============================================================================
+if not "%PERFIL%"=="4" goto :apertura_ide
+
+echo.
+echo [INFO] Configurando dependencias avanzadas de PowerShell para SysAdmin...
+
+echo ➜ Instalando módulo Azure (Az) en segundo plano...
+powershell -Command "Set-ExecutionPolicy Bypass -Scope Process -Force; if (-not (Get-Module -ListAvailable -Name Az)) { Install-Module -Name Az -AllowClobber -Scope AllUsers -Force }" >nul 2>&1
+
+echo ➜ Instalando módulo AWS Tools (AWSPowerShell) en segundo plano...
+powershell -Command "Set-ExecutionPolicy Bypass -Scope Process -Force; if (-not (Get-Module -ListAvailable -Name AWSPowerShell)) { Install-Module -Name AWSPowerShell -AllowClobber -Scope AllUsers -Force }" >nul 2>&1
+
+echo ✓ Módulos de administración en la nube listos.
+
+:apertura_ide
+
+:: ==============================================================================
+:: 🚀 APERTURA AUTOMÁTICA INTELIGENTE DEL IDE SELECCIONADO
+:: ==============================================================================
+echo.
+echo [INFO] Iniciando el entorno de desarrollo seleccionado...
+
 if "%IDE_NAME%"=="vscode" (
-    echo ➜ Configurando extensiones de desarrollo en VS Code...
-    timeout /t 5 >nul
-    set "CODE_CMD=code"
-    if not exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
-        set "CODE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+    if exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
+        start "" "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+    ) else ( start code )
+)
+
+if "%IDE_NAME%"=="vscodium" (
+    if exist "!LOCALAPPDATA!\Programs\VSCodium\VSCodium.exe" (
+        start "" "!LOCALAPPDATA!\Programs\VSCodium\VSCodium.exe"
+    ) else ( start codium )
+)
+
+if "%IDE_NAME%"=="cursor" (
+    if exist "!LOCALAPPDATA!\Programs\cursor\Cursor.exe" (
+        start "" "!LOCALAPPDATA!\Programs\cursor\Cursor.exe"
     )
-    if "!IA_LOCAL_INSTALADA!"=="SI" (
-        "!CODE_CMD!" --install-extension Continue.continue >nul 2>&1
-    ) else (
-        "!CODE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+)
+
+if "%IDE_NAME%"=="notepadpp" (
+    if exist "%ProgramFiles%\Notepad++\notepad++.exe" (
+        start "" "%ProgramFiles%\Notepad++\notepad++.exe"
+    ) else ( start notepad++ )
+)
+
+if "%IDE_NAME%"=="vscommunity" (
+    set "VS_OPENED=0"
+    if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe" (
+        start "" "%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
+        set "VS_OPENED=1"
     )
-    if "%PERFIL%"=="1" (
-        "!CODE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
-        "!CODE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+    if "!VS_OPENED!"=="0" if exist "!VSWHERE_PATH!" (
+        for /f "usebackq tokens=*" %%i in (`"!VSWHERE_PATH!" -products Microsoft.VisualStudio.Product.Community -property installationPath`) do (
+            start "" "%%i\Common7\IDE\devenv.exe"
+        )
     )
-    if "%PERFIL%"=="2" (
-        "!CODE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
-    )
-    if "%PERFIL%"=="3" (
-        "!CODE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
-    )
-    if "%PERFIL%"=="4" (
-        "!CODE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
-        "!CODE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
-    )
-    echo ✓ Plugins inyectados correctamente.
+)
+
+if "%IDE_NAME%"=="intellij" (
+    for /d %%d in ("%ProgramFiles%\JetBrains\IntelliJ IDEA Community*") do if exist "%%d\bin\idea64.exe" start "" "%%d\bin\idea64.exe"
+)
+
+if "%IDE_NAME%"=="rider" (
+    for /d %%d in ("%ProgramFiles%\JetBrains\JetBrains Rider*") do if exist "%%d\bin\rider64.exe" start "" "%%d\bin\rider64.exe"
+)
+
+if "%IDE_NAME%"=="netbeans" (
+    for /d %%d in ("%ProgramFiles%\NetBeans*") do if exist "%%d\netbeans\bin\netbeans64.exe" start "" "%%d\netbeans\bin\netbeans64.exe"
 )
 
 echo.
