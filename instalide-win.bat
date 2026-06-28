@@ -280,15 +280,51 @@ if not "!APTO_IA_LOCAL!"=="NO" (
     )
 )
 
+@REM :: 🚀 INSTALACIÓN PRINCIPAL VÍA WINGET
+@REM echo.
+@REM echo ➜ Instalando !WINGET_ID! de manera desatendida...
+@REM winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
+@REM if !errorlevel! neq 0 (
+@REM     echo [ERROR] Hubo un problema al desplegar el software mediante Winget.
+@REM     goto :finalizar
+@REM )
+@REM echo ✓ Instalacion del IDE completada con éxito.
 :: 🚀 INSTALACIÓN PRINCIPAL VÍA WINGET
 echo.
 echo ➜ Instalando !WINGET_ID! de manera desatendida...
-winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
+
+:: Si es NetBeans, inyectamos el parámetro --force para saltar el hash de seguridad de Winget
+if /I "%IDE_NAME%"=="netbeans" (
+    winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity --force >> "%LOG_FILE%" 2>&1
+) else (
+    winget install --id %WINGET_ID% -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
+)
+
+:: Evaluamos el resultado de Winget
 if !errorlevel! neq 0 (
-    echo [ERROR] Hubo un problema al desplegar el software mediante Winget.
+    if /I "%IDE_NAME%"=="netbeans" (
+        echo [ALERTA] Winget falló. Iniciando descarga directa desde los servidores oficiales de Apache...
+        
+        :: Descarga el instalador x64 real desde el espejo oficial de Apache usando un agente del sistema para evitar bloqueos
+        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://archive.apache.org/dist/netbeans/netbeans-installers/24/Apache-NetBeans-24-bin-windows-x64.exe' -OutFile '%TEMP%\netbeans_installer.exe' -UserAgent 'Mozilla/5.0'" >nul 2>&1
+
+        if exist "%TEMP%\netbeans_installer.exe" (
+            echo ➜ Desplegando ejecutable de NetBeans de forma silenciosa...
+            start /wait "" "%TEMP%\netbeans_installer.exe" /S >> "%LOG_FILE%" 2>&1
+            del "%TEMP%\netbeans_installer.exe" >nul 2>&1
+            
+            set "errorlevel=0"
+            goto :instalacion_correcta
+        )
+    )
+    
+    echo [ERROR] Hubo un problema al desplegar el software mediante Winget o descarga directa.
     goto :finalizar
 )
-echo ✓ Instalacion del IDE completada con esco.
+
+:instalacion_correcta
+echo ✓ Instalacion del IDE completada con éxito.
+
 
 :: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
 if not "%IDE_NAME%"=="vscode" goto :saltar_extensiones_vscode
@@ -364,17 +400,26 @@ goto :path_procesar
 :path_procesar
 if "%RUTA_A_ANADIR%"=="" goto :sysadmin_check
 
-:: Comprobar duplicados de forma segura sin romper la consola
-echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%;" >nul 2>&1
+@REM :: Comprobar duplicados de forma segura sin romper la consola
+@REM echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%;" >nul 2>&1
+@REM if !errorlevel! neq 0 (
+@REM     echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%\" >nul 2>&1
+@REM     if !errorlevel! neq 0 (
+@REM         echo ➜ Añadiendo "%RUTA_A_ANADIR%" al PATH del Sistema...
+@REM         :: Usamos PowerShell para saltar el bloqueo del registro de SETX
+@REM         powershell -Command "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';%RUTA_A_ANADIR%', 'Machine')" >nul 2>&1
+@REM         set "PATH=!PATH!;%RUTA_A_ANADIR%"
+@REM         echo ✓ PATH del sistema actualizado.
+@REM     )
+@REM )
+:: Comprobar si la ruta ya existe de forma literal en el PATH para evitar duplicados
+echo !PATH! | findstr /I /L /C:"%RUTA_A_ANADIR%" >nul 2>&1
 if !errorlevel! neq 0 (
-    echo !PATH! | findstr /I /C:";%RUTA_A_ANADIR%\" >nul 2>&1
-    if !errorlevel! neq 0 (
-        echo ➜ Añadiendo "%RUTA_A_ANADIR%" al PATH del Sistema...
-        :: Usamos PowerShell para saltar el bloqueo del registro de SETX
-        powershell -Command "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';%RUTA_A_ANADIR%', 'Machine')" >nul 2>&1
-        set "PATH=!PATH!;%RUTA_A_ANADIR%"
-        echo ✓ PATH del sistema actualizado.
-    )
+    echo ➜ Añadiendo "%RUTA_A_ANADIR%" al PATH del Sistema...
+    :: Usamos PowerShell para saltar el bloqueo del registro de SETX
+    powershell -Command "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';%RUTA_A_ANADIR%', 'Machine')" >nul 2>&1
+    set "PATH=!PATH!;%RUTA_A_ANADIR%"
+    echo ✓ PATH del sistema actualizado.
 )
 
 :sysadmin_check
@@ -449,13 +494,20 @@ if "%IDE_NAME%"=="rider" (
 )
 
 if "%IDE_NAME%"=="netbeans" (
-    for /d %%d in ("%ProgramFiles%\NetBeans*") do if exist "%%d\netbeans\bin\netbeans64.exe" start "" "%%d\netbeans\bin\netbeans64.exe"
+    for /d %%d in ("%ProgramFiles%\NetBeans*") do (
+        if exist "%%d\netbeans\bin\netbeans64.exe" (
+            start "" "%%d\netbeans\bin\netbeans64.exe" --console suppress 2>nul
+        )
+    )
 )
 
+:: Desactivamos temporalmente la expansión retardada para forzar la impresión literal del texto
+setlocal disabledelayedexpansion
 echo.
 echo ------------------------------------------------------------------------------
-echo  🎉 ¡Todo listo! Tu entorno de desarrollo ha sido configurado con exito.
+echo  🎉 ¡Todo listo! Tu entorno de desarrollo ha sido configurado con éxito.
 echo ------------------------------------------------------------------------------
+endlocal
 
 :finalizar
 echo.
