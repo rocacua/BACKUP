@@ -267,51 +267,55 @@ if "%YA_INSTALADO%"=="1" (
     goto :finalizar
 )
 
-
 :: 🤖 INSTALACIÓN DE ASISTENTE IA LOCAL
 set "IA_LOCAL_INSTALADA=NO"
-if not "!APTO_IA_LOCAL!"=="NO" (
-    :: Modificación 1: Validar si es VSCode o VSCodium
-    set "APTO_IDE_IA=NO"
-    if "%IDE_NAME%"=="vscode" set "APTO_IDE_IA=SI"
-    if "%IDE_NAME%"=="vscodium" set "APTO_IDE_IA=SI"
+if "%APTO_IA_LOCAL%"=="NO" goto :saltar_ia_local
 
-    if "!APTO_IDE_IA!"=="SI" (
-        echo.
-        echo [INFO] Tu hardware califica para ejecutar modelos de IA local.
-        set /p "RESPUESTA_IA=¿Deseas instalar el motor IA local (Ollama + Qwen2.5-Coder + Extension Continue)? [s/N]: "
-        if /i "!RESPUESTA_IA!"=="s" (
-            echo ➜ Descargando e instalando Ollama...
-            winget install --id Ollama.Ollama -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
+rem Modificación 1: Validar si el IDE elegido es apto de forma segura
+set "APTO_IDE_IA=NO"
+if "%IDE_NAME%"=="vscode" set "APTO_IDE_IA=SI"
+if "%IDE_NAME%"=="vscodium" set "APTO_IDE_IA=SI"
 
-            echo [INFO] Esperando a que el servicio de Ollama se estabilice en el sistema...
-            timeout /t 15 >nul
+if not "%APTO_IDE_IA%"=="SI" goto :saltar_ia_local
 
-            :: REFRESCO DE PATH EXPLICITO: Forzamos a la sesión actual a leer el PATH del registro
-            for /f "tokens=2*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SYS_PATH=%%B"
-            for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "USR_PATH=%%B"
-            set "PATH=!SYS_PATH!;!USR_PATH!;%PATH%"
+echo.
+echo [INFO] Tu hardware califica para ejecutar modelos de IA local.
+set /p "RESPUESTA_IA=¿Deseas instalar el motor IA local (Ollama + Qwen2.5-Coder + Extension Continue)? [s/N]: "
 
-            :: Comprobación doble: por comando directo o buscando el binario en la ruta por defecto
-            set "OLLAMA_VALIDO=NO"
-            where ollama >nul 2>nul && set "OLLAMA_VALIDO=SI"
-            if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_VALIDO=SI"
+if /i not "!RESPUESTA_IA!"=="s" goto :saltar_ia_local
 
-            if "!OLLAMA_VALIDO!"=="SI" (
-                echo ➜ Descargando modelo ligero optimizado Qwen2.5-Coder (Esto puede tardar unos minutos)...
-                :: Usamos una llamada directa para asegurar el inicio de la descarga
-                powershell -Command "Start-Process 'ollama' -ArgumentList 'run', 'qwen2.5-coder:1.5b', '--nowait' -WindowStyle Hidden"
-                
-                :: Le damos 5 segundos para que impacte la petición de descarga en el demonio de Ollama
-                timeout /t 5 >nul
-                set "IA_LOCAL_INSTALADA=SI"
-                echo ✓ Motor de IA Local configurado correctamente.
-            ) else (
-                echo [ALERTA] Ollama no se pudo registrar en el PATH a tiempo. Se saltará la IA local.
-            )
-        )
-    )
-)
+echo ➜ Descargando e instalando Ollama...
+winget install --id Ollama.Ollama -e --source winget --accept-package-agreements --disable-interactivity >> "%LOG_FILE%" 2>&1
+
+echo [INFO] Esperando a que el servicio de Ollama se estabilice en el sistema...
+timeout /t 15 >nul
+
+rem REFRESCO DE PATH LINEAL: Totalmente seguro contra paréntesis en rutas (x86)
+for /f "tokens=2*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SYS_PATH=%%B"
+for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "USR_PATH=%%B"
+set "PATH=!SYS_PATH!;!USR_PATH!;%PATH%"
+
+rem Comprobación de binarios sin bloques de paréntesis conflictivos
+set "OLLAMA_VALIDO=NO"
+where ollama >nul 2>nul && set "OLLAMA_VALIDO=SI"
+if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_VALIDO=SI"
+
+if not "!OLLAMA_VALIDO!"=="SI" goto :error_path_ollama
+
+echo ➜ Descargando modelo ligero optimizado Qwen2.5-Coder (Esto puede tardar unos minutos)...
+ollama pull qwen2.5-coder:1.5b >nul 2>&1
+
+set "IA_LOCAL_INSTALADA=SI"
+echo ✓ Motor de IA Local configurado correctamente.
+goto :saltar_ia_local
+
+:error_path_ollama
+echo [ALERTA] Ollama no se pudo registrar en el PATH a tiempo. Se saltará la IA local.
+
+:saltar_ia_local
+rem Continuación normal del script
+
+
 
 :: 🚀 INSTALACIÓN PRINCIPAL VÍA WINGET
 echo.
@@ -399,55 +403,136 @@ echo ✓ Instalacion del IDE completada con éxito.
 @REM :saltar_extensiones_vscode
 
 :: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
-:: Modificación 1: Permitir que tanto VSCode como VSCodium entren a este bloque
+@REM :: Modificación 1: Permitir que tanto VSCode como VSCodium entren a este bloque
+@REM if "%IDE_NAME%"=="vscode" goto :procesar_extensiones
+@REM if "%IDE_NAME%"=="vscodium" goto :procesar_extensiones
+@REM goto :saltar_extensiones_ide
+
+@REM :procesar_extensiones
+@REM echo ➜ Configurando extensiones de desarrollo en %IDE_NAME%...
+@REM timeout /t 5 >nul
+
+@REM :: Modificación 2: Identificar dinámicamente el comando y ruta según el IDE elegido
+@REM if "%IDE_NAME%"=="vscode" (
+@REM     set "IDE_CMD=code"
+@REM     if exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
+@REM         set "IDE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
+@REM     )
+@REM )
+@REM if "%IDE_NAME%"=="vscodium" (
+@REM     set "IDE_CMD=codium"
+@REM     if exist "!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd" (
+@REM         set "IDE_CMD=!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd"
+@REM     )
+@REM )
+
+@REM :: Copiloto de IA según la elección del usuario previa
+@REM if "!IA_LOCAL_INSTALADA!"=="SI" (
+@REM     "!IDE_CMD!" --install-extension Continue.continue >nul 2>&1
+@REM ) else (
+@REM     "!IDE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+@REM )
+
+@REM :: Extensiones por perfil (compatibles tanto con VSCode como con VSCodium)
+@REM if "%PERFIL%"=="1" (
+@REM     "!IDE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
+@REM     "!IDE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="2" (
+@REM     "!IDE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="3" (
+@REM     "!IDE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
+@REM )
+@REM if "%PERFIL%"=="4" (
+@REM     "!IDE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
+@REM     "!IDE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
+@REM )
+@REM echo ✓ Plugins inyectados correctamente.
+
+@REM :saltar_extensiones_ide
+
+:: ⚙ CONFIGURACIÓN AUTOMÁTICA DE EXTENSIONES
 if "%IDE_NAME%"=="vscode" goto :procesar_extensiones
 if "%IDE_NAME%"=="vscodium" goto :procesar_extensiones
 goto :saltar_extensiones_ide
 
 :procesar_extensiones
 echo ➜ Configurando extensiones de desarrollo en %IDE_NAME%...
-timeout /t 5 >nul
+timeout /t 3 >nul
 
-:: Modificación 2: Identificar dinámicamente el comando y ruta según el IDE elegido
+rem Forzar refresco rápido del PATH en la sesión actual para detectar el ejecutable
+for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "USR_PATH=%%B"
+for /f "tokens=2*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SYS_PATH=%%B"
+set "PATH=!SYS_PATH!;!USR_PATH!;%PATH%"
+
+:: Identificar dinámicamente el comando y la ruta exacta según el IDE elegido
 if "%IDE_NAME%"=="vscode" (
     set "IDE_CMD=code"
+    set "CONTINUE_DIR=%USERPROFILE%\.continue"
     if exist "!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd" (
         set "IDE_CMD=!LOCALAPPDATA!\Programs\Microsoft VS Code\bin\code.cmd"
     )
 )
 if "%IDE_NAME%"=="vscodium" (
     set "IDE_CMD=codium"
+    set "CONTINUE_DIR=%USERPROFILE%\.vscodium\extensions"
+    rem Ajuste de ruta de configuración de Continue para VSCodium
+    set "CONTINUE_DIR=%USERPROFILE%\.continue"
     if exist "!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd" (
         set "IDE_CMD=!LOCALAPPDATA!\Programs\VSCodium\bin\codium.cmd"
     )
 )
 
-:: Copiloto de IA según la elección del usuario previa
+:: Copiloto de IA según la elección del usuario previa (USANDO CALL PARA EVITAR CAÍDAS)
 if "!IA_LOCAL_INSTALADA!"=="SI" (
-    "!IDE_CMD!" --install-extension Continue.continue >nul 2>&1
+    call "!IDE_CMD!" --install-extension Continue.continue >nul 2>&1
+    
+    rem 🤖 INYECCIÓN AUTOMÁTICA DE CONFIGURACIÓN PARA OLLAMA
+    if not exist "!CONTINUE_DIR!" mkdir "!CONTINUE_DIR!"
+    (
+        echo {
+        echo   "models": [
+        echo     {
+        echo       "title": "Qwen2.5 Coder 1.5B",
+        echo       "provider": "ollama",
+        echo       "model": "qwen2.5-coder:1.5b"
+        echo     }
+        echo   ],
+        echo   "tabAutocompleteModel": {
+        echo     "title": "Qwen2.5 Coder 1.5B",
+        echo     "provider": "ollama",
+        echo       "model": "qwen2.5-coder:1.5b"
+        echo   }
+        echo }
+    ) > "!CONTINUE_DIR!\config.json" 2>nul
 ) else (
-    "!IDE_CMD!" --install-extension Codeium.codeium >nul 2>&1
+    call "!IDE_CMD!" --install-extension Codeium.codeium >nul 2>&1
 )
 
-:: Extensiones por perfil (compatibles tanto con VSCode como con VSCodium)
+:: Extensiones por perfil (USANDO CALL)
 if "%PERFIL%"=="1" (
-    "!IDE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
-    "!IDE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
+    call "!IDE_CMD!" --install-extension dbaeumer.vscode-eslint >nul 2>&1
+    call "!IDE_CMD!" --install-extension esbenp.prettier-vscode >nul 2>&1
 )
 if "%PERFIL%"=="2" (
-    "!IDE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
+    call "!IDE_CMD!" --install-extension vscjava.vscode-java-pack >nul 2>&1
 )
 if "%PERFIL%"=="3" (
-    "!IDE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
+    call "!IDE_CMD!" --install-extension ms-dotnettools.csdevkit >nul 2>&1
 )
 if "%PERFIL%"=="4" (
-    "!IDE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
-    "!IDE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
+    call "!IDE_CMD!" --install-extension ms-ansible.ansible >nul 2>&1
+    call "!IDE_CMD!" --install-extension ms-azuretools.vscode-docker >nul 2>&1
 )
 echo ✓ Plugins inyectados correctamente.
 
-:saltar_extensiones_ide
+:: 🚀 LANZAR EL IDE AL FINALIZAR
+echo ✓ Todo listo. Abriendo %IDE_NAME%...
+if /i "%IDE_NAME%"=="vscode" start "" code .
+if /i "%IDE_NAME%"=="vscodium" start "" codium .
 
+:saltar_extensiones_ide
 
 :: ==============================================================================
 :: 🌐 CONFIGURACIÓN AUTOMÁTICA DE VARIABLES DE ENTORNO (PATH)
