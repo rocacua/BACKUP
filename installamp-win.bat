@@ -109,6 +109,10 @@ if %errorlevel% neq 0 (
 sc config Apache2.4 start= auto >nul
 net start Apache2.4 >nul 2>&1
 
+:: Registrar PHP de XAMPP en el PATH de forma segura sin límite de 1024 caracteres
+set "PATH=%PATH%;C:\xampp\php"
+powershell -Command "if ((([Environment]::GetEnvironmentVariable('Path', 'Machine')) -split ';') -notcontains 'C:\xampp\php') { [Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';C:\xampp\php'), 'Machine') }" >nul 2>&1
+
 :: Configuración de MySQL
 cd /d "%XAMPP_DIR%\mysql\bin"
 sc query mysql >nul 2>&1
