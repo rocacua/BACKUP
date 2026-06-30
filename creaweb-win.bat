@@ -234,63 +234,78 @@ set "REQUIERE_PHP=n"
 set "REQUIERE_COMPOSER=n"
 
 if /i "!WEB_NAME!"=="wordpress"   set "REQUIERE_PHP=y"
-if /i "!WEB_NAME!"=="laminas"     set "REQUIERE_PHP=y"& set "REQUIERE_COMPOSER=y"
-if /i "!WEB_NAME!"=="codeigniter" set "REQUIERE_PHP=y"& set "REQUIERE_COMPOSER=y"
-if /i "!WEB_NAME!"=="laravel"     set "REQUIERE_PHP=y"& set "REQUIERE_COMPOSER=y"
-if /i "!WEB_NAME!"=="symfony"     set "REQUIERE_PHP=y"& set "REQUIERE_COMPOSER=y"
+if /i "!WEB_NAME!"=="laminas"     set "REQUIERE_PHP=y" && set "REQUIERE_COMPOSER=y"
+if /i "!WEB_NAME!"=="codeigniter" set "REQUIERE_PHP=y" && set "REQUIERE_COMPOSER=y"
+if /i "!WEB_NAME!"=="laravel"     set "REQUIERE_PHP=y" && set "REQUIERE_COMPOSER=y"
+if /i "!WEB_NAME!"=="symfony"     set "REQUIERE_PHP=y" && set "REQUIERE_COMPOSER=y"
 
 :: 1. Validar requerimiento de PHP y estado de XAMPP
-if "!REQUIERE_PHP!"=="y" (
-    if not exist "C:\xampp\php\php.exe" (
-        cls
-        echo ==============================================================================
-        echo [ALERTA CRÍTICA] El entorno !WEB_NAME! requiere un servidor PHP activo.
-        echo ==============================================================================
-        echo  No se ha detectado la estructura base de XAMPP en 'C:\xampp'.
-        echo  Por favor, ejecuta primero el script 'installamp-win.bat' para preparar el
-        echo  servidor web y los servicios antes de continuar con este asistente.
-        echo ==============================================================================
-        goto :finalizar_web
-    )
-    
-    :: Si XAMPP existe pero no está en el PATH de esta consola, lo acoplamos al vuelo
-    where php >nul 2>nul
-    if !errorlevel! neq 0 (
-        set "PATH=%PATH%;C:\xampp\php"
-        powershell -Command "if ((([Environment]::GetEnvironmentVariable('Path', 'Machine')) -split ';') -notcontains 'C:\xampp\php') { [Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';C:\xampp\php'), 'Machine') }" >nul 2>&1
-        set "instalado_php=s"
-    ) else (
-        set "instalado_php=s"
-    )
+if "!REQUIERE_PHP!"=="n" goto :saltar_validacion_php
+
+if not exist "C:\xampp\php\php.exe" (
+    cls
+    echo ==============================================================================
+    echo [ALERTA CRÍTICA] El entorno !WEB_NAME! requiere un servidor PHP activo.
+    echo ==============================================================================
+    echo  No se ha detectado la estructura base de XAMPP en 'C:\xampp'.
+    echo  Por favor, ejecuta primero el script 'installamp-win.bat' para preparar el
+    echo  servidor web y los servicios antes de continuar con este asistente.
+    echo ==============================================================================
+    goto :finalizar_web
 )
 
-:: 2. Validar requerimiento e instalación desatendida de Composer
-if "!REQUIERE_COMPOSER!"=="y" (
-    :: Acoplamos temporalmente rutas comunes por si acaso
-    set "PATH=%PATH%;C:\ProgramData\ComposerSetup\bin;%APPDATA%\Composer\vendor\bin"
-    
-    where composer >nul 2>nul
-    if !errorlevel! neq 0 (
-        echo [INFO] Composer es necesario para !WEB_NAME! pero no esta instalado.
-        echo ⏳ Descargando e instalando Composer de forma silenciosa, espere...
-        
-        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://getcomposer.org' -OutFile '%temp%\Composer-Setup.exe'" >nul 2>&1
-        
-        if exist "%temp%\Composer-Setup.exe" (
-            "%temp%\Composer-Setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /ALLUSERS /PHP="C:\xampp\php\php.exe" >nul 2>&1
-            del "%temp%\Composer-Setup.exe" >nul 2>&1
-            set "PATH=%PATH%;C:\ProgramData\ComposerSetup\bin"
-            set "instalado_composer=s"
-            echo ✓ Composer instalado y vinculado al PHP de XAMPP con éxito.
-        ) else (
-            echo [ERROR] No se pudo descargar el instalador de Composer. La instalación fallará.
-            goto :finalizar_web
-        )
-    ) else (
-        set "instalado_composer=s"
-    )
+:: Ejecución plana de PowerShell para evitar conflictos de paréntesis con CMD
+if exist "C:\xampp\php\php.ini" (
+    powershell -NoProfile -Command "$ini = Get-Content 'C:\xampp\php\php.ini'; $ini -replace ';extension=openssl', 'extension=openssl' -replace ';extension=mbstring', 'extension=mbstring' -replace ';extension=curl', 'extension=curl' -replace ';extension=fileinfo', 'extension=fileinfo' -replace ';extension=zip', 'extension=zip' | Set-Content 'C:\xampp\php\php.ini'" >nul 2>&1
 )
+
+:: Si XAMPP existe pero no está en el PATH de esta consola, lo acoplamos al vuelo
+where php >nul 2>nul
+if !errorlevel! neq 0 (
+    set "PATH=%PATH%;C:\xampp\php"
+    powershell -NoProfile -Command "if ((([Environment]::GetEnvironmentVariable('Path', 'Machine')) -split ';') -notcontains 'C:\xampp\php') { [Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';C:\xampp\php'), 'Machine') }" >nul 2>&1
+)
+set "instalado_php=s"
+
+:saltar_validacion_php
+
+:: 2. Validar requerimiento e instalación desatendida de Composer
+if "!REQUIERE_COMPOSER!"=="n" goto :saltar_validacion_composer
+
+:: Acoplamos temporalmente rutas comunes por si acaso
+set "PATH=%PATH%;C:\ProgramData\ComposerSetup\bin;%APPDATA%\Composer\vendor\bin"
+
+where composer >nul 2>nul
+if !errorlevel! equ 0 (
+    set "instalado_composer=s"
+    goto :saltar_validacion_composer
+)
+
+echo [INFO] Composer es necesario para !WEB_NAME! pero no esta instalado.
+echo ⏳ Descargando e instalando Composer de forma silenciosa, espere...
+
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://getcomposer.org/Composer-Setup.exe' -OutFile '%temp%\Composer-Setup.exe'" >nul 2>&1
+
+if not exist "%temp%\Composer-Setup.exe" (
+    echo [ERROR] No se pudo descargar el instalador de Composer. La instalación fallará.
+    goto :finalizar_web
+)
+
+"%temp%\Composer-Setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /ALLUSERS /PHP=C:\xampp\php\php.exe >nul 2>&1
+del "%temp%\Composer-Setup.exe" >nul 2>&1
+
+echo ✓ Composer instalado y vinculado al PHP de XAMPP con éxito.
+
+:: Refrescar PATH dinámico de forma limpia sin usar bloques IF anidados
+for /f "delims=" %%M in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'Machine')"') do set "SYS_PATH=%%M"
+for /f "delims=" %%U in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')"') do set "USR_PATH=%%U"
+set "PATH=!SYS_PATH!;!USR_PATH!;C:\xampp\php;C:\ProgramData\ComposerSetup\bin"
+
+set "instalado_composer=s"
+
+:saltar_validacion_composer
 echo.
+
 
 :: ==============================================================================
 :: 🚀 ENRUTADOR CENTRAL DE ENTORNOS (Mapeo Seguro de Opciones 1-8)
@@ -354,21 +369,30 @@ where composer >nul 2>nul
 if !errorlevel! neq 0 (
     if exist "C:\ProgramData\ComposerSetup\bin\composer.bat" (
         set "instalado_composer=s"
+        set "PATH=%PATH%;C:\ProgramData\ComposerSetup\bin"
     ) else (
         echo [ERROR] No se puede instalar Laminas porque Composer no está disponible en el PATH.
         goto :finalizar_web
     )
 )
 
+:: NUEVO: Limpiar residuos de instalaciones fallidas previas para evitar el bloqueo de Composer
+if exist "!path_web!" (
+    rd /s /q "!path_web!" >nul 2>&1
+)
+
 echo ➜ Generando estructura base de Laminas Project via Composer...
 echo ⏳ Esto puede demorar unos minutos, por favor espere...
-
+:: composer diagnose
 :: Forzar la descarga del esqueleto mvc oficial de Laminas sin interacción de consola (--no-interaction)
 call composer create-project --no-interaction --stability=stable laminas/laminas-mvc-skeleton "!path_web!" >nul 2>&1
 
 if !errorlevel! neq 0 (
-    echo [ALERTA] Hubo un problema al ejecutar composer. Reintentando de forma permisiva...
-    call composer create-project --no-interaction laminas/laminas-mvc-skeleton "!path_web!" >nul 2>&1
+    echo [ALERTA] Hubo un problema al ejecutar composer. Reintentando mostrando salida...
+    :: Eliminamos residuos del primer intento fallido antes de reintentar
+    if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+    :: Reintento permisivo mostrando errores en consola por si falta alguna extensión o hay caída de red
+    call composer create-project --no-interaction laminas/laminas-mvc-skeleton "!path_web!"
 )
 
 :: 3. Configuración interna del Framework (Aprovisionamiento del entorno de desarrollo local)
@@ -381,7 +405,8 @@ if exist "!path_web!\composer.json" (
     echo [ERROR] No se pudo inicializar el esqueleto de Laminas en la ruta asignada.
     goto :finalizar_web
 )
-
+:: Forzamos un código de salida exitoso (0) para que el script ignore el fallo estético del script interno de Laminas
+ver >nul
 :: 📝 AJUSTE CRÍTICO: Redirección del DocumentRoot de Apache a la carpeta /public de Laminas
 set "path_web_original=!path_web!"
 set "path_web=!path_web!\public"
@@ -544,13 +569,20 @@ goto :finalizar_web
 if "!instalado_php!"=="s" (
     tasklist /FI "IMAGENAME eq mysqld.exe" 2>nul | findstr /I "mysqld.exe" >nul
     if !errorlevel! neq 0 (
-        echo [INFO] MySQL no está en ejecución. Intentando arrancar el servicio...
-        if exist "C:\xampp\mysql\bin\mysqld.exe" (
-            start "" /B "C:\xampp\mysql\bin\mysqld.exe" --defaults-file="C:\xampp\mysql\bin\my.ini"
-            timeout /t 5 /nobreak >nul
-        ) else (
-            echo [ALERTA] No se encontró el ejecutable de MySQL.
-            exit /b 1
+        echo [INFO] MySQL no está en ejecución. Intentando arrancar el servicio de Windows...
+        :: Intentar arrancar como servicio (ordenado en installamp-win.bat)
+        net start mysql >nul 2>&1
+        
+        :: Si el servicio no está instalado o falla, levantamos el binario de emergencia
+        tasklist /FI "IMAGENAME eq mysqld.exe" 2>nul | findstr /I "mysqld.exe" >nul
+        if !errorlevel! neq 0 (
+            if exist "C:\xampp\mysql\bin\mysqld.exe" (
+                start "" /B "C:\xampp\mysql\bin\mysqld.exe" --defaults-file="C:\xampp\mysql\bin\my.ini"
+                timeout /t 5 /nobreak >nul
+            ) else (
+                echo [ALERTA] No se encontró el ejecutable de MySQL.
+                exit /b 1
+            )
         )
     )
 
@@ -561,8 +593,9 @@ if "!instalado_php!"=="s" (
     set "ENV_DB_USER=!db_user!"
     set "ENV_DB_PASS=!db_pass!"
     
-    php -r "$p = new PDO('mysql:host='.getenv('ENV_DB_HOST'), getenv('ENV_DB_USER'), getenv('ENV_DB_PASS')); $p->exec('CREATE DATABASE IF NOT EXISTS '.getenv('ENV_DB_NAME').' CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');" 2>nul
-    
+    :: SOLUCIÓN: Usamos comillas dobles externas para CMD y construimos los backticks con chr(96) en PHP
+    php -r "$b=chr(96); $p=new PDO('mysql:host='.getenv('ENV_DB_HOST'), getenv('ENV_DB_USER'), getenv('ENV_DB_PASS')); $p->exec('CREATE DATABASE IF NOT EXISTS '.$b.getenv('ENV_DB_NAME').$b.' CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');" 2>nul
+
     if !errorlevel! equ 0 (
         echo ✓ Base de datos vinculada con éxito o ya existente.
     ) else (
