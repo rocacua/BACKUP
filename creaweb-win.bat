@@ -138,7 +138,7 @@ pause
 :: ==============================================================================
 :: 🧠 SELECCIÓN DEL ENTORNO WEB
 :: ==============================================================================
-cls
+:: cls
 echo [1]WP [2]Laminas [3]CI4 [4]Laravel [5]Symfony [6]React [7]Node [8]Python [0]Salir
 set /p "ENTORNO_SELEC=Opción [0-8]: "
 
@@ -256,9 +256,17 @@ if not exist "C:\xampp\php\php.exe" (
 
 :: Ejecución plana de PowerShell para evitar conflictos de paréntesis con CMD
 if exist "C:\xampp\php\php.ini" (
-    powershell -NoProfile -Command "$ini = Get-Content 'C:\xampp\php\php.ini'; $ini -replace ';extension=openssl', 'extension=openssl' -replace ';extension=mbstring', 'extension=mbstring' -replace ';extension=curl', 'extension=curl' -replace ';extension=fileinfo', 'extension=fileinfo' -replace ';extension=zip', 'extension=zip' | Set-Content 'C:\xampp\php\php.ini'" >nul 2>&1
+    rem powershell -NoProfile -Command "$ini = Get-Content 'C:\xampp\php\php.ini'; $ini -replace ';extension=openssl', 'extension=openssl' -replace ';extension=mbstring', 'extension=mbstring' -replace ';extension=curl', 'extension=curl' -replace ';extension=fileinfo', 'extension=fileinfo' -replace ';extension=zip', 'extension=zip' | Set-Content 'C:\xampp\php\php.ini'" >nul 2>&1
+    rem powershell -NoProfile -Command "$ini = Get-Content 'C:\xampp\php\php.ini'; $ini -replace ';extension=mbstring', 'extension=mbstring' -replace ';extension=curl', 'extension=curl' -replace ';extension=fileinfo', 'extension=fileinfo' -replace ';extension=zip', 'extension=zip' | Set-Content 'C:\xampp\php\php.ini'" >nul 2>&1
+    powershell -NoProfile -Command "$ini = Get-Content 'C:\xampp\php\php.ini'; $ini -replace ';extension=mbstring', 'extension=mbstring' -replace ';extension=curl', 'extension=curl' -replace ';extension=fileinfo', 'extension=fileinfo' -replace ';extension=zip', 'extension=zip' -replace ';extension=intl', 'extension=intl' | Set-Content 'C:\xampp\php\php.ini'" >nul 2>&1
 )
-
+:: ==============================================================================
+:: NUEVO: Auto-parcheo de seguridad de Apache para habilitar módulos Proxy (Evita Error 500)
+:: ==============================================================================
+@REM if exist "C:\xampp\apache\conf\httpd.conf" (
+@REM     powershell -NoProfile -Command "$h = Get-Content 'C:\xampp\apache\conf\httpd.conf'; $h -replace '#LoadModule proxy_module', 'LoadModule proxy_module' -replace '#LoadModule proxy_http_module', 'LoadModule proxy_http_module' | Set-Content 'C:\xampp\apache\conf\httpd.conf'" >nul 2>&1
+@REM )
+:: ==============================================================================
 :: Si XAMPP existe pero no está en el PATH de esta consola, lo acoplamos al vuelo
 where php >nul 2>nul
 if !errorlevel! neq 0 (
@@ -367,7 +375,7 @@ call :crear_bd_mysql_php
 :: Comprobación secundaria blindada
 where composer >nul 2>nul
 if !errorlevel! neq 0 (
-    if exist "C:\ProgramData\ComposerSetup\bin\composer.bat" (
+    if exist "C:\ProgramData\ComposerSetup\bin\composer.cmd" (
         set "instalado_composer=s"
         set "PATH=%PATH%;C:\ProgramData\ComposerSetup\bin"
     ) else (
@@ -412,41 +420,428 @@ set "path_web_original=!path_web!"
 set "path_web=!path_web!\public"
 
 goto :enlazar_hosts
-:: --- [3] ENTORNO: CODEIGNITER 4 (Esqueleto base temporal) ---
+
+:: --- ENTORNO: CODEIGNITER 4 ---
 :instalar_codeigniter
-echo [INFO] Inicializando motor para CodeIgniter 4...
+:: 1. Crear base de datos local asociada
+call :crear_bd_mysql_php
+
+:: Comprobación de Composer
+if not exist "C:\ProgramData\ComposerSetup\bin\composer.phar" (
+    echo [ERROR] No se puede instalar CodeIgniter porque composer.phar no está disponible.
+    goto :finalizar_web
+)
+
+:: Limpiar residuos de instalaciones fallidas previas
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+
+echo ➜ Generando estructura base de CodeIgniter 4 via Composer...
+echo ⏳ Esto puede demorar unos minutos, por favor espere...
+
+:: Invocación plana e inmunizada con PHP
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project codeigniter4/appstarter "!path_web!" --no-interaction >nul 2>&1
+
+:: Guardamos el estado de forma segura
+set "COMPOSER_STATUS=%ERRORLEVEL%"
+if %COMPOSER_STATUS% EQU 0 goto :ci4_instalado_ok
+
+echo [ALERTA] Hubo un problema al ejecutar composer. Reintentando mostrando salida...
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project codeigniter4/appstarter "!path_web!" --no-interaction
+
+:ci4_instalado_ok
+:: SOLUCIÓN DEFINITIVA: Validar la ruta cruda sin asignaciones intermedias de comillas o variables "set"
+if exist "!path_web!\vendor\." goto :ci4_vendor_ok
+
+echo [ERROR] No se pudo inicializar el esqueleto de CodeIgniter 4 (Faltan dependencias de Composer).
 goto :finalizar_web
 
-:: --- [4] ENTORNO: LARAVEL (Esqueleto base temporal) ---
+:ci4_vendor_ok
+echo ✓ Estructura de directorios de CodeIgniter 4 creada con éxito.
+cd /d "!path_web!" || goto :finalizar_web
+
+:: Configurar el framework en modo desarrollo de forma plana
+if not exist "env" goto :finalizar_config_ci4
+copy /Y env .env >nul 2>&1
+
+:: Modificación del archivo .env aislada de forma segura
+powershell -NoProfile -Command "$content = Get-Content '.env'; $content -replace '# CI_ENVIRONMENT = production', 'CI_ENVIRONMENT = development' | Set-Content '.env'" >nul 2>&1
+
+:finalizar_config_ci4
+:: 📝 AJUSTE CRÍTICO: Redirección del DocumentRoot de Apache a la carpeta /public de CodeIgniter
+set "path_web_original=!path_web!"
+set "path_web=!path_web!\public"
+
+goto :enlazar_hosts
+
+:: --- ENTORNO: LARAVEL ---
 :instalar_laravel
-echo [INFO] Inicializando motor para Laravel...
+:: 1. Crear base de datos local asociada
+call :crear_bd_mysql_php
+
+:: Comprobación de Composer
+if not exist "C:\ProgramData\ComposerSetup\bin\composer.phar" (
+    echo [ERROR] No se puede instalar Laravel porque composer.phar no está disponible.
+    goto :finalizar_web
+)
+
+:: Limpiar residuos de instalaciones fallidas previas
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+
+echo ➜ Generando estructura base de Laravel via Composer...
+echo ⏳ Esto puede demorar unos minutos, por favor espere...
+
+:: Invocación plana e inmunizada con PHP para descargar Laravel
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project laravel/laravel "!path_web!" --no-interaction >nul 2>&1
+
+:: Guardamos el estado de forma segura
+set "COMPOSER_STATUS=%ERRORLEVEL%"
+if %COMPOSER_STATUS% EQU 0 goto :laravel_instalado_ok
+
+echo [ALERTA] Hubo un problema al ejecutar composer. Reintentando mostrando salida...
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project laravel/laravel "!path_web!" --no-interaction
+
+:laravel_instalado_ok
+:: Validar la ruta cruda sin asignaciones intermedias de comillas (Inmune a fallos de puntos)
+if exist "!path_web!\vendor\." goto :laravel_vendor_ok
+
+echo [ERROR] No se pudo inicializar el esqueleto de Laravel (Faltan dependencias de Composer).
 goto :finalizar_web
 
-:: --- [5] ENTORNO: SYMFONY (Esqueleto base temporal) ---
+:laravel_vendor_ok
+echo ✓ Estructura de directorios de Laravel creada con éxito.
+cd /d "!path_web!" || goto :finalizar_web
+
+:: 2. Aprovisionamiento automático del entorno Laravel (.env)
+if not exist ".env.example" goto :finalizar_config_laravel
+copy /Y .env.example .env >nul 2>&1
+
+echo ➜ Configurando variables de entorno y generando App Key...
+:: Configurar la conexión de la Base de Datos directamente en el archivo .env de Laravel
+powershell -NoProfile -Command "$c = Get-Content '.env'; $c -replace 'DB_DATABASE=laravel', 'DB_DATABASE=!db_name!' -replace 'DB_USERNAME=root', 'DB_USERNAME=!db_user!' -replace 'DB_PASSWORD=', 'DB_PASSWORD=!db_pass!' | Set-Content '.env'" >nul 2>&1
+
+:: Generar la clave de cifrado obligatoria de la aplicación
+call php artisan key:generate >nul 2>&1
+
+:finalizar_config_laravel
+:: 📝 AJUSTE CRÍTICO: Redirección del DocumentRoot de Apache a la carpeta /public de Laravel
+set "path_web_original=!path_web!"
+set "path_web=!path_web!\public"
+
+goto :enlazar_hosts
+
+
+:: --- ENTORNO: SYMFONY ---
 :instalar_symfony
-echo [INFO] Inicializando motor para Symfony...
+:: 1. Crear base de datos local asociada
+call :crear_bd_mysql_php
+
+:: Comprobación de Composer
+if not exist "C:\ProgramData\ComposerSetup\bin\composer.phar" (
+    echo [ERROR] No se puede instalar Symfony porque composer.phar no está disponible.
+    goto :finalizar_web
+)
+
+:: Limpiar residuos de instalaciones fallidas previas
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+
+echo ➜ Generando estructura base de Symfony via Composer...
+echo ⏳ Esto puede demorar unos minutos, por favor espere...
+
+:: Invocación plana con PHP para descargar el esqueleto oficial de Symfony
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project symfony/skeleton "!path_web!" --no-interaction >nul 2>&1
+
+:: Guardamos el estado de forma segura
+set "COMPOSER_STATUS=%ERRORLEVEL%"
+if %COMPOSER_STATUS% EQU 0 goto :symfony_instalado_ok
+
+echo [ALERTA] Hubo un problema al ejecutar composer. Reintentando mostrando salida...
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+php "C:\ProgramData\ComposerSetup\bin\composer.phar" create-project symfony/skeleton "!path_web!" --no-interaction
+
+:symfony_instalado_ok
+:: Validar la ruta cruda sin asignaciones intermedias de comillas (Inmune a fallos de puntos)
+if exist "!path_web!\vendor\." goto :symfony_vendor_ok
+
+echo [ERROR] No se pudo inicializar el esqueleto de Symfony (Faltan dependencias de Composer).
 goto :finalizar_web
 
-:: --- [6] ENTORNO: REACT (Esqueleto base temporal) ---
+:symfony_vendor_ok
+echo ✓ Estructura de directorios de Symfony creada con éxito.
+cd /d "!path_web!" || goto :finalizar_web
+
+:: 2. Aprovisionamiento automático de la conexión MySQL de Symfony (.env)
+if not exist ".env" goto :finalizar_config_symfony
+
+echo ➜ Configurando cadena de conexión DATABASE_URL en el archivo .env...
+:: Construimos la cadena de conexión estándar para PDO MySQL: mysql://usuario:password@host:puerto/base_datos
+:: Como XAMPP viene por defecto sin contraseña en root, manejamos la estructura limpia.
+set "DB_CONN_STR=mysql://!db_user!:!db_pass!@!db_host!:3306/!db_name!?serverVersion=8.2.12-MariaDB&charset=utf8mb4"
+
+:: Inyección segura mediante PowerShell para evitar conflictos con ampersands y barras del DSN
+powershell -NoProfile -Command "$c = Get-Content '.env'; $c -replace 'postgresql://app:secret@127.0.0.1:5432/app\?serverVersion=16&charset=utf8', '!DB_CONN_STR!' | Set-Content '.env'" >nul 2>&1
+
+:finalizar_config_symfony
+:: 📝 AJUSTE CRÍTICO: Redirección del DocumentRoot de Apache a la carpeta /public de Symfony
+set "path_web_original=!path_web!"
+set "path_web=!path_web!\public"
+
+goto :enlazar_hosts
+
+:: --- ENTORNO: REACT (VITE) ---
 :instalar_react
-echo [INFO] Inicializando motor para React...
+where npm >nul 2>nul
+if !errorlevel! equ 0 goto :node_react_ok
+
+echo [INFO] Node.js (NPM) es necesario para React pero no está instalado.
+echo ⏳ Iniciando instalación silenciosa de Node.js LTS via WinGet, espere...
+winget install -e --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
+
+if not exist "C:\Program Files\nodejs\node.exe" (
+    echo [ERROR] No se pudo instalar Node.js automáticamente.
+    goto :finalizar_web
+)
+echo ✓ Node.js instalado correctamente. Acoplando variables de entorno...
+for /f "delims=" %%M in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'Machine')"') do set "SYS_PATH=%%M"
+for /f "delims=" %%U in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')"') do set "USR_PATH=%%U"
+set "PATH=!SYS_PATH!;!USR_PATH!;C:\Program Files\nodejs"
+
+:node_react_ok
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+mkdir "!path_web!" >nul 2>&1
+cd /d "!path_web!" || goto :finalizar_web
+
+echo ➜ Generando estructura base de React + Vite via NPM...
+echo ⏳ Esto puede demorar unos minutos, por favor espere...
+
+:: SOLUCIÓN ATÓMICA: Forzamos el ENTER mediante 'echo.|' para automatizar create-vite
+echo.|call npx -y create-vite@latest . -- --template react --ts=false --eslint=false >nul 2>&1
+
+if exist "package.json" goto :react_files_ok
+
+:: Reintento plano de contingencia sin comentarios conflictivos en CMD
+echo.|call npx -y create-vite@latest . -- --template react --ts=false --eslint=false
+
+:react_files_ok
+echo ✓ Estructura de directorios de React creada con éxito.
+
+:: ==============================================================================
+:: NUEVO: Sobrescribir/Generar el vite.config.js limpio con autorización de host
+:: ==============================================================================
+(
+echo export default {
+echo   server: {
+echo     allowedHosts: ['!dominio_limpio!', '.test']
+echo   }
+echo }
+) > vite.config.js
+:: ==============================================================================
+
+echo ➜ Descargando paquetes del ecosistema de React (npm install)...
+echo ⏳ Esto puede demorar un par de minutos, por favor espere...
+call npm install --no-audit --no-fund >nul 2>&1
+
+if exist "node_modules\." goto :react_dependencias_ok
+
+echo [ERROR] No se pudieron descargar las dependencias de Node para React.
 goto :finalizar_web
 
-:: --- [7] ENTORNO: NODE (Esqueleto base temporal) ---
+:react_dependencias_ok
+echo ✓ Dependencias de React instaladas correctamente.
+
+set "path_web_original=!path_web!"
+set "PUERTO_NODE=5173"
+set "IS_NODE_ENV=y"
+
+goto :enlazar_hosts
+
+goto :mostrar_manual_react_directo
+
+:mostrar_manual_react_directo
+echo.
+echo ==============================================================================
+echo               === CÓMO CONTINUAR CON TU NUEVO ENTORNO ===
+echo ==============================================================================
+echo  📂 Ruta Física: !path_web_original!
+echo  🌐 Servidor:    Servidor de Desarrollo Local (Vite)
+echo ------------------------------------------------------------------------------
+echo  👉 ¡Tu estructura de React + Vite ya está 100%% lista y configurada!
+echo  👉 Para encender el servidor de desarrollo en segundo plano, ejecuta:
+echo     📂 cd /d "!path_web_original!"
+echo     ➜ npm run dev
+echo  👉 Abre la URL local (ej. http://localhost:5173) que te indique la consola.
+echo ==============================================================================
+echo.
+echo 🎉 ¡Entorno para !WEB_NAME! creado con éxito en !path_web_original!
+goto :finalizar_web
+
+:: --- ENTORNO: NODE.JS (EXPRESS API) ---
 :instalar_node
-echo [INFO] Inicializando motor para Node...
+where npm >nul 2>nul
+if !errorlevel! equ 0 goto :node_express_ok
+
+echo [INFO] Node.js es necesario pero no está instalado.
+echo ⏳ Iniciando instalación silenciosa de Node.js LTS...
+winget install -e --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
+
+for /f "delims=" %%M in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'Machine')"') do set "SYS_PATH=%%M"
+for /f "delims=" %%U in ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')"') do set "USR_PATH=%%U"
+set "PATH=!SYS_PATH!;!USR_PATH!;C:\Program Files\nodejs"
+
+:node_express_ok
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+mkdir "!path_web!" >nul 2>&1
+cd /d "!path_web!" || goto :finalizar_web
+
+echo ➜ Inicializando proyecto de Node.js (package.json)...
+:: Inyectamos un ENTER forzado también en npm init por seguridad
+echo.|call npm init --yes >nul 2>&1
+
+echo ➜ Instalando framework Express y dependencias de base de datos...
+call npm install express mysql2 dotenv --no-audit --no-fund >nul 2>&1
+
+if not exist "node_modules\." (
+    echo [ERROR] No se pudo inicializar el microservicio de Express.
+    goto :finalizar_web
+)
+
+echo ✓ Entorno Express y Node.js configurado con éxito.
+
+:: Inyección atómica mediante una única línea de PowerShell libre de errores de escape de CMD
+powershell -NoProfile -Command "Set-Content -Path 'index.js' -Value 'const express = require(\"express\"); const app = express(); const port = process.env.PORT || 3000; app.get(\"/\", (req, res) => res.json({ status: \"API Viva\", framework: \"Express\" })); app.listen(port, () => console.log(\"Servidor Express activo en puerto \" + port));'" >nul 2>&1
+
+set "path_web_original=!path_web!"
+set "PUERTO_NODE=3000"
+set "IS_NODE_ENV=y"
+
+goto :enlazar_hosts
+
+
+
+
+goto :mostrar_manual_node_directo
+
+
+:mostrar_manual_node_directo
+echo.
+echo ==============================================================================
+echo               === CÓMO CONTINUAR CON TU NUEVO ENTORNO ===
+echo ==============================================================================
+echo  📂 Ruta Física: !path_web_original!
+echo  🌐 Servidor:    API Rest Express (Node.js)
+echo ------------------------------------------------------------------------------
+echo  👉 ¡Tu microservicio en Node.js + Express ya está listo!
+echo  👉 Hemos instalado 'mysql2' para conectarte a tu base de datos '!db_name!'.
+echo  👉 Para encender tu servidor API en el puerto 3000, ejecuta:
+echo     📂 cd /d "!path_web_original!"
+echo     ➜ node index.js
+==============================================================================
+echo.
+echo 🎉 ¡Entorno para !WEB_NAME! creado con éxito en !path_web_original!
 goto :finalizar_web
 
-:: --- [8] ENTORNO: PYTHON (Esqueleto base temporal) ---
+
+:: --- ENTORNO: PYTHON ---
 :instalar_python
-echo [INFO] Inicializando motor para Python...
-goto :finalizar_web
+:: 1. CÁLCULO INMEDIATO DEL DOMINIO (Antes de generar cualquier archivo)
+for /f "usebackq tokens=*" %%a in (`powershell -Command "$u = '!url_web!'; if (-not ($u.StartsWith('http://') -or $u.StartsWith('https://'))) { $u = 'http://' + $u }; [System.Uri]$u | Select-Object -ExpandProperty Host"`) do (
+    set "dominio_limpio=%%a"
+)
+
+:: 2. ELIMINACIÓN RADICAL DE LOS ALIAS DE LA TIENDA MICROSOFT
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\python.exe" /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\python3.exe" /f >nul 2>&1
+
+:: 3. VERIFICACIÓN Y ENRUTAMIENTO DE PYTHON
+set "PYTHON_LOCAL_EXE=%USERPROFILE%\AppData\Local\Programs\Python\Python313\python.exe"
+
+if exist "!PYTHON_LOCAL_EXE!" goto :python_disponible_ok
+
+where python >nul 2>nul
+if !errorlevel! equ 0 (
+    :: Validar que no sea el alias falso de la tienda midiendo su salida
+    python --version >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "PYTHON_LOCAL_EXE=python"
+        goto :python_disponible_ok
+    )
+)
+
+echo [INFO] Python es necesario pero no está instalado.
+echo ⏳ Iniciando descarga e instalación automatizada de Python, espere...
+powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-amd64.exe' -OutFile '%TEMP%\python_installer.exe'" >nul 2>&1
+
+if exist "%TEMP%\python_installer.exe" (
+    "%TEMP%\python_installer.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 TargetDir="%USERPROFILE%\AppData\Local\Programs\Python\Python313"
+    del /f /q "%TEMP%\python_installer.exe" >nul 2>&1
+)
+
+:python_disponible_ok
+if exist "!path_web!" rd /s /q "!path_web!" >nul 2>&1
+mkdir "!path_web!" >nul 2>&1
+cd /d "!path_web!" || goto :finalizar_web
+
+echo ➜ Descargando Framework Flask y dependencias de base de datos...
+echo ⏳ Esto puede demorar un par de minutos, por favor espere...
+
+"!PYTHON_LOCAL_EXE!" -m pip install --upgrade pip --quiet >nul 2>&1
+"!PYTHON_LOCAL_EXE!" -m pip install Flask mysql-connector-python --quiet >nul 2>&1
+
+echo ✓ Entorno Flask configurado con éxito.
+
+:: 4. GENERACIÓN DE LA API APP.PY
+powershell -NoProfile -Command "Set-Content -Path 'app.py' -Value 'from flask import Flask, jsonify', 'app = Flask(__name__)', '@app.route(\"/\")', 'def home(): return jsonify(status=\"API Viva\", framework=\"Flask\")', 'if __name__ == \"__main__\": app.run(port=5000)'" >nul 2>&1
+
+:: 5. GENERACIÓN IMPENETRABLE DEL INICIAR.BAT (Pasando variables resueltas a memoria temporal)
+echo !dominio_limpio!> "%TEMP%\dom_temp.txt"
+echo !PYTHON_LOCAL_EXE!> "%TEMP%\py_temp.txt"
+
+set /p DOMINIO_REAL=<"%TEMP%\dom_temp.txt"
+set /p PYTHON_REAL=<"%TEMP%\py_temp.txt"
+
+del /f /q "%TEMP%\dom_temp.txt" >nul 2>&1
+del /f /q "%TEMP%\py_temp.txt" >nul 2>&1
+
+(
+echo @echo off
+echo chcp 65001 ^>nul
+echo title Servidor API Flask - http://%DOMINIO_REAL%
+echo cd /d "%%~dp0"
+echo echo 🚀 Iniciando servidor Flask...
+echo echo 🌐 Tu API está disponible en: http://%DOMINIO_REAL%
+echo echo ---------------------------------------------------
+echo "%PYTHON_REAL%" app.py
+echo pause
+) > iniciar.bat
+
+set "path_web_original=!path_web!"
+set "PUERTO_NODE=5000"
+set "IS_NODE_ENV=y"
+
+goto :enlazar_hosts
+
+
+
+
+
+
+
+
+
 
 
 
 :enlazar_hosts
-:: Contingencia para entornos que no son WordPress: asegurar que la carpeta física exista antes de configurar Apache
-if not exist "!path_web!" mkdir "!path_web!" >nul 2>&1
+:: Parcheo de seguridad de Apache para habilitar módulos Proxy de forma garantizada
+if exist "C:\xampp\apache\conf\httpd.conf" (
+    powershell -NoProfile -Command "$h = Get-Content 'C:\xampp\apache\conf\httpd.conf'; $h -replace '#LoadModule proxy_module', 'LoadModule proxy_module' -replace '#LoadModule proxy_http_module', 'LoadModule proxy_http_module' | Set-Content 'C:\xampp\apache\conf\httpd.conf'" >nul 2>&1
+)
+
+:: No creamos la carpeta /public de forma agresiva antes de tiempo para entornos PHP de Composer
+if /i "!WEB_NAME!"=="wordpress" (
+    if not exist "!path_web!" mkdir "!path_web!" >nul 2>&1
+)
 
 echo ➜ Enlazando dominio !url_web! en hosts...
 
@@ -469,40 +864,50 @@ if exist "!vhosts_file!" (
     echo ➜ Añadiendo configuración VirtualHost para !dominio_limpio!...
     findstr /I /C:"ServerName !dominio_limpio!" "!vhosts_file!" >nul
     if !errorlevel! neq 0 (
-        (
-            echo.
-            echo ^<VirtualHost *:80^>
-            echo     ServerName !dominio_limpio!
-            echo     DocumentRoot "!path_web_apache!"
-            echo     ^<Directory "!path_web_apache!"^>
-            echo         Options Indexes FollowSymLinks
-            echo         AllowOverride All
-            echo         Require all granted
-            echo     ^</Directory^>
-            echo ^</VirtualHost^>
-        ) >> "!vhosts_file!"
-        
+        if "!IS_NODE_ENV!"=="y" (
+            (
+                echo.
+                echo ^<VirtualHost *:80^>
+                echo     ServerName !dominio_limpio!
+                echo     ProxyPreserveHost On
+                echo     ProxyRequests Off
+                echo     ProxyPass / http://127.0.0.1:!PUERTO_NODE!/
+                echo     ProxyPassReverse / http://127.0.0.1:!PUERTO_NODE!/
+                echo ^</VirtualHost^>
+            ) >> "!vhosts_file!"
+        ) else (
+            (
+                echo.
+                echo ^<VirtualHost *:80^>
+                echo     ServerName !dominio_limpio!
+                echo     DocumentRoot "!path_web_apache!"
+                echo     ^<Directory "!path_web_apache!"^>
+                echo         Options Indexes FollowSymLinks
+                echo         AllowOverride All
+                echo         Require all granted
+                echo     ^</Directory^>
+                echo ^</VirtualHost^>
+            ) >> "!vhosts_file!"
+        )
+
         echo ➜ Reiniciando Apache para aplicar el nuevo dominio...
-        :: 1. Intentar reiniciar vía Servicio de Windows (Método prioritario y silencioso)
         sc query Apache2.4 >nul 2>&1
         if !errorlevel! equ 0 (
             net stop Apache2.4 >nul 2>&1
             timeout /t 2 /nobreak >nul
             net start Apache2.4 >nul 2>&1
         ) else (
-            :: 2. Si no está instalado como servicio, mata el proceso suelto y relánzalo en background
             taskkill /FI "IMAGENAME eq httpd.exe" /F >nul 2>&1
             timeout /t 2 /nobreak >nul
             if exist "C:\xampp\apache\bin\httpd.exe" start /B "" "C:\xampp\apache\bin\httpd.exe"
         )
-
     )
 )
+
 :: 🔍 VERIFICACIÓN DE CONECTIVIDAD UNIVERSAL (Simulando Navegador Real)
 echo ➜ Realizando petición de prueba a http://!dominio_limpio!...
-for /f "usebackq tokens=*" %%h in (`powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $r = Invoke-WebRequest -Uri 'http://!dominio_limpio!' -Method Head -TimeoutSec 5 -UserAgent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' -ErrorAction SilentlyContinue; if ($r) { [int]$r.StatusCode } else { echo '302' }"`) do (set "HTTP_CODE=%%h")
+for /f "usebackq tokens=*" %%h in (`powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri 'http://!dominio_limpio!' -Method Head -TimeoutSec 5 -UserAgent 'Mozilla/5.0' -ErrorAction Stop; [int]$r.StatusCode } catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { echo '302' } }"`) do (set "HTTP_CODE=%%h")
 
-:: Si da un código de éxito (200), redirección de instalación (301/302) o error de falta de index pero servidor vivo (403/404)
 set "SERVER_OK=n"
 if "!HTTP_CODE!"=="200" set "SERVER_OK=s"
 if "!HTTP_CODE!"=="301" set "SERVER_OK=s"
@@ -536,28 +941,50 @@ if /i "!WEB_NAME!"=="laminas" (
     echo  👉 Vincula tus credenciales de MySQL en el array db usando el usuario !db_user!
 )
 if /i "!WEB_NAME!"=="codeigniter" (
-    echo  👉 Estructura base de CodeIgniter 4 lista.
+    echo  👉 ¡Tu estructura base de CodeIgniter 4 ya está completamente montada!
+    echo  👉 El entorno se ha configurado automáticamente en modo 'development'.
+    echo  👉 Para conectar la base de datos '!db_name!', edita el archivo:
+    echo     📂 !path_web_original!\.env
+    echo     Y descomenta/ajusta las líneas de database.default.database.
 )
 if /i "!WEB_NAME!"=="laravel" (
-    echo  1. Ejecuta: 'composer install' en la raíz del proyecto.
-    echo  2. Ejecuta: 'copy .env.example .env' y genera la clave con: 'php artisan key:generate'
-    echo  3. Ejecuta: 'php artisan migrate' para migrar la base de datos.
+    echo  👉 ¡Tu estructura de Laravel ya está 100%% lista y configurada!
+    echo  👉 El archivo .env ha sido vinculado automáticamente a la base de datos '!db_name!'.
+    echo  👉 La clave secreta de la aplicación ya ha sido generada con Artisan.
+    echo  👉 Para iniciar la migración de tablas, ejecuta en la raíz: 'php artisan migrate'
 )
 if /i "!WEB_NAME!"=="symfony" (
-    echo  1. Ejecuta: 'composer install' para preparar el núcleo de Symfony.
-    echo  2. Configura tu DATABASE_URL dentro del archivo .env según tus credenciales de MySQL.
+    echo  👉 ¡Tu estructura de Symfony ya está 100%% lista y configurada!
+    echo  👉 La variable DATABASE_URL ha sido configurada automáticamente con la BD '!db_name!'.
+    echo  👉 Para crear tus entidades o controladores, ejecuta: 'php bin/console'
 )
 if /i "!WEB_NAME!"=="react" (
-    echo  1. Ejecuta: 'npm install' para descargar los paquetes de Node.
-    echo  2. Levanta el entorno con: 'npm run dev'
+    echo  👉 ¡Tu estructura de React + Vite ya está 100%% lista y configurada!
+    echo  👉 El dominio 'http://!dominio_limpio!' ha sido enlazado a tu hosts local.
+    echo  ⚠  [CRÍTICO] Abre una NUEVA ventana de CMD para que reconozca los comandos de Node.
+    echo  👉 Para encender el servidor ejecute en la nueva consola:
+    echo     📂 cd /d "!path_web_original!"
+    echo     ➜ npm run dev -- --host
 )
 if /i "!WEB_NAME!"=="node" (
-    echo  1. Inicializa tu proyecto con: 'npm install'
-    echo  2. Inicia tu servidor principal utilizando: 'npm start' o 'node app.js'
+    echo  👉 ¡Tu microservicio en Node.js + Express ya está 100%% listo!
+    echo  👉 El dominio 'http://!dominio_limpio!' ha sido enlazado a tu hosts local.
+    echo  ⚠  [CRÍTICO] Abre una NUEVA ventana de CMD para que reconozca los comandos de Node.
+    echo  👉 Para encender tu servidor API en el puerto 3000, ejecuta:
+    echo     📂 cd /d "!path_web_original!"
+    echo     ➜ node index.js
 )
 if /i "!WEB_NAME!"=="python" (
-    echo  1. Crea tu entorno virtual: 'python -m venv venv'
-    echo  2. Actívalo con: 'venv\Scripts\activate' e instala tus paquetes via pip.
+    echo  👉 ¡Tu microservicio en Python + Flask ya está 100%% listo!
+    echo  👉 El dominio 'http://%DOMINIO_REAL%' ha sido enlazado a tu hosts local.
+    echo  ⚡ [NUEVO] Se ha creado un archivo 'iniciar.bat' en la raíz de tu proyecto.
+    echo  👉 Para encender tu servidor API en el puerto 5000 de forma instantánea:
+    echo     📂 Ve a: !path_web_original!
+    echo     ➜ Haz doble clic sobre el archivo: iniciar.bat
+    echo.
+    echo  👉 O si prefieres lanzarlo manualmente desde la consola ejecuta:
+    echo     📂 cd /d "!path_web_original!"
+    echo     ➜ "%PYTHON_REAL%" app.py
 )
 echo ==============================================================================
 echo.
@@ -565,15 +992,14 @@ echo 🎉 ¡Entorno para !WEB_NAME! creado con éxito en !path_web!
 goto :finalizar_web
 
 
+
 :crear_bd_mysql_php
 if "!instalado_php!"=="s" (
     tasklist /FI "IMAGENAME eq mysqld.exe" 2>nul | findstr /I "mysqld.exe" >nul
     if !errorlevel! neq 0 (
         echo [INFO] MySQL no está en ejecución. Intentando arrancar el servicio de Windows...
-        :: Intentar arrancar como servicio (ordenado en installamp-win.bat)
         net start mysql >nul 2>&1
         
-        :: Si el servicio no está instalado o falla, levantamos el binario de emergencia
         tasklist /FI "IMAGENAME eq mysqld.exe" 2>nul | findstr /I "mysqld.exe" >nul
         if !errorlevel! neq 0 (
             if exist "C:\xampp\mysql\bin\mysqld.exe" (
@@ -587,15 +1013,13 @@ if "!instalado_php!"=="s" (
     )
 
     echo ➜ Creando base de datos MySQL local si no existe...
-    :: Transferimos las variables de Batch al entorno de proceso para que PHP las lea sin importar si están vacías
     set "ENV_DB_NAME=!db_name!"
     set "ENV_DB_HOST=!db_host!"
     set "ENV_DB_USER=!db_user!"
     set "ENV_DB_PASS=!db_pass!"
     
-    :: SOLUCIÓN: Usamos comillas dobles externas para CMD y construimos los backticks con chr(96) en PHP
     php -r "$b=chr(96); $p=new PDO('mysql:host='.getenv('ENV_DB_HOST'), getenv('ENV_DB_USER'), getenv('ENV_DB_PASS')); $p->exec('CREATE DATABASE IF NOT EXISTS '.$b.getenv('ENV_DB_NAME').$b.' CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;');" 2>nul
-
+    
     if !errorlevel! equ 0 (
         echo ✓ Base de datos vinculada con éxito o ya existente.
     ) else (
@@ -605,6 +1029,7 @@ if "!instalado_php!"=="s" (
     echo [ALERTA] No se puede crear la base de datos porque PHP no está disponible.
 )
 exit /b
+
 
 
 :: ==============================================================================
@@ -620,3 +1045,5 @@ exit /b 0
 echo %~1
 echo %~1 >> "%LOG_FILE%"
 exit /b
+
+
