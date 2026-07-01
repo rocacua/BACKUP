@@ -235,8 +235,13 @@ read -r instalar_filezilla
 # CONFIGURACIÓN DESATENDIDA DE PHPMYADMIN (Debian/Mint)
 # ==========================================
 if [ "$OS" == "Debian-based" ]; then
-    echo "phpmyadmin phpmyadmin/reconfigure-webconfig select apache2" | $SUDO debconf-set-selections
-    echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | $SUDO debconf-set-selections
+    # echo "phpmyadmin phpmyadmin/reconfigure-webconfig select apache2" | $SUDO debconf-set-selections
+    # echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | $SUDO debconf-set-selections
+    # export DEBIAN_FRONTEND=noninteractive
+    $SUDO debconf-set-selections <<EOF
+phpmyadmin phpmyadmin/reconfigure-webconfig select apache2
+phpmyadmin phpmyadmin/dbconfig-install boolean false
+EOF
     export DEBIAN_FRONTEND=noninteractive
 fi
 
@@ -289,8 +294,31 @@ case "$OS" in
         ;;
 esac
 
+#Cuando es Debian aparece un menú de configuración de cuando es Debian para que no se quede colgado al seleccionar las opciones de phpmyadmin, para que no se quede colgado al seleccionar las opciones
+# 🟡 PASO 2: Restaurar de forma momentánea los canales 1 y 2 directos a la pantalla 
+# if [ "$OS" == "Debian-based" ] || [ "$OS" == "SUSE-based" ]; then
+#     pintar "Atención, se le preguntará por el servidor, escoja configura el servidor apache2 (no lighttpd) y luego configurar la base de datos con la contraseña que desees y si deseas reinstalar la base de datos para phpmyadmin." "alerta"
+#     pintar "⏳ Pausando el guardado del log para abrir el configurador visual..." "alerta"
+#     exec 1>&3 2>&4
+# fi
+
+# pintar "5. Instalando PhpMyAdmin..." "menu"
+# $SUDO $INSTALL_CMD $PMA_PKG
 pintar "5. Instalando PhpMyAdmin..." "menu"
-$SUDO $INSTALL_CMD $PMA_PKG
+if [ "$OS" == "Debian-based" ]; then
+    # Forzamos de forma estricta el modo no interactivo y pasamos un stdin nulo
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y < /dev/null phpmyadmin
+else
+    $SUDO $INSTALL_CMD $PMA_PKG
+fi
+
+
+
+# # 🔵 PASO 3: Reactivar el log de Bash para que todo lo que siga se guarde de nuevo en el archivo
+# if [ "$OS" == "Debian-based" ] || [ "$OS" == "SUSE-based" ]; then
+#     exec > >(tee -i -a "$LOG_FILE") 2>&1
+#     pintar "✅ phpMyAdmin instalado. Reanudando grabación del log en: $LOG_FILE" "exito"
+# fi
 
 pintar "Configurando phpMyAdmin con Apache..." "menu"
 
