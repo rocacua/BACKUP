@@ -117,7 +117,15 @@ while true; do
         read -p "$(pintar "¿Deseas lanzar ${OPCION}.sh ahora? [S/n]: " "prompt" 0)" LANZAR
         LANZAR="${LANZAR:-S}" # Si pulsa ENTER directamente, asume que SÍ
         if [[ "$LANZAR" =~ ^[Ss]?$ ]]; then
-            bash "$DIR_SCRIPT/${OPCION}.sh"
+            # 🔍 DETECCIÓN INTELIGENTE DE REQUISITO ROOT
+            # Busca si el script exige que el invocador sea root (if ... -ne 0)
+            if grep -qE "EUID.*-ne.*0|UID.*-ne.*0" "$DIR_SCRIPT/${OPCION}.sh"; then
+                pintar "🔑 Ejecutando con sudo..." "alerta"
+                sudo bash "$DIR_SCRIPT/${OPCION}.sh"
+            else
+                # Si el script gestiona sudo internamente, se ejecuta normal
+                bash "$DIR_SCRIPT/${OPCION}.sh"
+            fi
         fi
     else
         pintar "No se ha encontrado el archivo ${OPCION}.sh por favor, revise $DIR_SCRIPT" "error"

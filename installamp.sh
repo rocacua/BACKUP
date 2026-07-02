@@ -110,6 +110,7 @@ if [ "$(uname)" == "Darwin" ]; then
     APACHE_S="httpd"
     # Mapeo unificado para Mac
     DB_PKGS="mysql"
+    DB_SERVICE="mysql"
     PHP_PKGS="php imagemagick" # Brew incluye fpm y extensiones dentro de php
     FZ_PKG="" # Filezilla en mac requiere brew install --cask, lo manejamos aparte
     PMA_PKG="phpmyadmin"  
@@ -132,15 +133,24 @@ else
     # Unificar y pasar a minúsculas usando expansión nativa de Bash (sin tuberías)
     ALL_IDS="${ID} ${ID_LIKE}"
     ALL_IDS="${ALL_IDS,,}" # Esto convierte todo el texto a minúsculas al instante
+    OS_ID="${ID,,}"        # Forzamos también el ID principal a minúsculas para evitar fallos de mayúsculas
 
     # 3. Clasificación inteligente por patrones en lugar de coincidencia exacta
     if [[ "$ALL_IDS" =~ "ubuntu" || "$ALL_IDS" =~ "debian" || "$ALL_IDS" =~ "linuxmint" ]]; then
             OS="Debian-based"
-            INSTALL_CMD="apt-get install -y"
+            #INSTALL_CMD="apt-get install -y"
+            INSTALL_CMD="apt-get install -y -o Dpkg::Options::=--force-confmiss"
             SUDO="sudo"
             UPDATE_CMD="apt-get update && apt-get upgrade -y"
             APACHE_S="apache2"
-            DB_PKGS="mysql-server mysql-client"
+            # Corrección de nombres de paquetes y servicios según el OS_ID en minúsculas
+            if [[ "$OS_ID" == "debian" ]]; then
+                DB_PKGS="mariadb-server mariadb-client"
+                DB_SERVICE="mariadb"
+            else
+                DB_PKGS="mysql-server mysql-client"
+                DB_SERVICE="mysql"
+            fi
             PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick php-json php-mysqlnd"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -156,6 +166,7 @@ else
             UPDATE_CMD="dnf upgrade -y"
             APACHE_S="httpd"
             DB_PKGS="mariadb-server" # En Fedora 'mariadb-server' arrastra las herramientas de cliente automáticamente
+            DB_SERVICE="mariadb"
             PHP_PKGS="php php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-json php-bcmath imagemagick php-pecl-imagick"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -171,6 +182,7 @@ else
             UPDATE_CMD="pacman -Syu --noconfirm"
             APACHE_S="httpd"
             DB_PKGS="mariadb mariadb-clients"
+            DB_SERVICE="mariadb"
             PHP_PKGS="php php-fpm php-gd imagemagick php-imagick" # Arch mete el resto (zip, curl, xml, mbstring) en el núcleo de php
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -186,6 +198,7 @@ else
             UPDATE_CMD="zypper --non-interactive update"
             APACHE_S="apache2"
             DB_PKGS="mariadb mariadb-client"
+            DB_SERVICE="mariadb"
             #PHP_PKGS="php8 php8-fpm php8-mysql php8-zip php8-gd php8-mbstring php8-curl php8-xml php8-bcmath ImageMagick php8-imagick"
             PHP_PKGS="apache2-mod_php8 php8 php8-mysql php8-gd php8-mbstring php8-dom php8-zip php8-openssl php8-curl php8-xmlreader php8-xmlwriter"
             FZ_PKG="filezilla"
@@ -324,15 +337,27 @@ pintar "Configurando phpMyAdmin con Apache..." "menu"
 
 case "$OS" in
     "Debian-based")
-        # Ya lo hace apt automáticamente, solo nos aseguramos de reiniciar
-        $SUDO systemctl reload apache2
+        # 🛡️ Crear enlace simbólico y activar la configuración en Apache
+        if [ -f /etc/phpmyadmin/apache.conf ]; then
+            $SUDO ln -sf /etc/phpmyadmin/apache.conf /etc/apache2/conf-available/phpmyadmin.conf
+            $SUDO a2enconf phpmyadmin > /dev/null 2>&1
+        elif [ -d /usr/share/phpmyadmin ] && [ -d /etc/apache2/conf-available ]; then
+            # Alternativa genérica por si la ruta cambia
+            echo "Alias /phpmyadmin /usr/share/phpmyadmin" | $SUDO tee /etc/apache2/conf-available/phpmyadmin.conf > /dev/null
+            $SUDO a2enconf phpmyadmin > /dev/null 2>&1
+        fi
+        # Reiniciar Apache para aplicar los cambios en Debian/Ubuntu
+        $SUDO systemctl restart $APACHE_S
         ;;
 
     "Fedora-based")
         # Fedora instala phpmyadmin en /usr/share/phpMyAdmin y crea un archivo en /etc/httpd/conf.d/phpMyAdmin.conf
         # Por defecto viene restringido a localhost. Lo hacemos accesible eliminando las restricciones de IP.
-        $SUDO sed -i 's/Require local/Require all granted/g' /etc/httpd/conf.d/phpMyAdmin.conf 2>/dev/null || true
-        $SUDO systemctl reload httpd
+        if [ -f /etc/httpd/conf.d/phpMyAdmin.conf ]; then
+            $SUDO sed -i 's/Require local/Require all granted/g' /etc/httpd/conf.d/phpMyAdmin.conf 2>/dev/null || true
+        fi
+        #$SUDO systemctl reload httpd
+        $SUDO systemctl restart "$APACHE_S"
         ;;
         
     "Arch-based")
@@ -402,16 +427,15 @@ fi
 pintar "7. Activando e iniciando servicios..." "menu"
 if [ "$OS" == "macOS" ]; then
     brew services start $APACHE_S
-    brew services start mysql
+    brew services start $DB_SERVICE # Cambiado por la variable (en macOS suele ser 'mysql' o 'mariadb')
 else
-    # Inicialización especial para MariaDB en Arch Linux (requerido antes de arrancar)
+    # Inicialización especial para MariaDB en Arch Linux
     if [ "$OS" == "Arch-based" ]; then
         $SUDO mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql > /dev/null
     fi
+    
     $SUDO systemctl enable --now $APACHE_S
-    # 🛡️ Mapeo de seguridad para evitar fallos de servicio en Fedora/Arch/Suse
-    if [ "$OS" == "Debian-based" ]; then SYS_MYSQL="mysql"; else SYS_MYSQL="mariadb"; fi
-    $SUDO systemctl enable --now $SYS_MYSQL # Usa 'mysql' o 'mariadb' según corresponda
+    $SUDO systemctl enable --now $DB_SERVICE # 🛡️ Llama directamente a la variable global sin condicionales extra
 fi
 
 pintar "Configurando permisos del espacio de trabajo..." "menu"

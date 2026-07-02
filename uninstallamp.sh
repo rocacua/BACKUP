@@ -16,7 +16,9 @@ if [ "$(uname)" == "Darwin" ]; then
     SUDO=""
     UPDATE_CMD="brew update && brew upgrade"
     APACHE_S="httpd"
+    # Mapeo unificado para Mac
     DB_PKGS="mysql"
+    DB_SERVICE="mysql"
     PHP_PKGS="php imagemagick" 
     FZ_PKG="" 
     PMA_PKG="phpmyadmin"  
@@ -34,6 +36,7 @@ else
     
     ALL_IDS="${ID} ${ID_LIKE}"
     ALL_IDS="${ALL_IDS,,}" 
+    OS_ID="${ID,,}"
 
     if [[ "$ALL_IDS" =~ "ubuntu" || "$ALL_IDS" =~ "debian" || "$ALL_IDS" =~ "linuxmint" ]]; then
             OS="Debian-based"
@@ -41,7 +44,14 @@ else
             SUDO="sudo"
             UPDATE_CMD="apt-get update && apt-get upgrade -y"
             APACHE_S="apache2"
-            DB_PKGS="mysql-server mysql-client"
+            # Corrección de nombres de paquetes y servicios según el OS_ID en minúsculas
+            if [[ "$OS_ID" == "debian" ]]; then
+                DB_PKGS="mariadb-server mariadb-client"
+                DB_SERVICE="mariadb"
+            else
+                DB_PKGS="mysql-server mysql-client"
+                DB_SERVICE="mysql"
+            fi
             PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick php-json php-mysqlnd"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -56,6 +66,7 @@ else
             UPDATE_CMD="dnf upgrade -y"
             APACHE_S="httpd"
             DB_PKGS="mariadb-server" 
+            DB_SERVICE="mariadb"
             PHP_PKGS="php php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-json php-bcmath imagemagick php-pecl-imagick"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -70,6 +81,7 @@ else
             UPDATE_CMD="pacman -Syu --noconfirm"
             APACHE_S="httpd"
             DB_PKGS="mariadb mariadb-clients"
+            DB_SERVICE="mariadb"
             PHP_PKGS="php php-fpm php-gd imagemagick php-imagick" 
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -84,6 +96,7 @@ else
             UPDATE_CMD="zypper --non-interactive update"
             APACHE_S="apache2"
             DB_PKGS="mariadb mariadb-client"
+            DB_SERVICE="mariadb"
             PHP_PKGS="php8 php8-fpm php8-mysql php8-zip php8-gd php8-mbstring php8-curl php8-xml php8-bcmath ImageMagick php8-imagick"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
@@ -105,12 +118,14 @@ echo "==========================================================================
 echo " Deteniendo servicios..."
 if [ "$OS" = "macOS" ]; then
     brew services stop $APACHE_S 2>/dev/null
-    brew services stop mysql 2>/dev/null
+    brew services stop $DB_SERVICE 2>/dev/null
 else
     $SUDO systemctl stop $APACHE_S 2>/dev/null
     $SUDO systemctl stop mysql 2>/dev/null
     $SUDO systemctl stop mariadb 2>/dev/null
     $SUDO systemctl stop php-fpm 2>/dev/null
+    # Matar procesos huérfanos de MySQL que puedan bloquear carpetas
+    $SUDO killall -9 mysqld mariadbd 2>/dev/null || true
 fi
 
 # 2. Desinstalar exactamente los mismos paquetes que se instalaron
@@ -120,12 +135,24 @@ if [ "$OS" = "macOS" ]; then
     # Eliminar Filezilla si se instaló mediante cask
     brew uninstall --cask filezilla 2>/dev/null
 else
-    $SUDO $REMOVE_CMD $APACHE_S $DB_PKGS $PHP_PKGS $FZ_PKG $PMA_PKG 2>/dev/null
-    # Limpieza de dependencias huérfanas
+    # $SUDO $REMOVE_CMD $APACHE_S $DB_PKGS $PHP_PKGS $FZ_PKG $PMA_PKG 2>/dev/null
+    # # Limpieza de dependencias huérfanas
+    # if [ "$OS" = "Debian-based" ]; then
+    #     $SUDO apt-get autoremove -y 2>/dev/null
+    # elif [ "$OS" = "Fedora-based" ]; then
+    #     $SUDO dnf autoremove -y 2>/dev/null
+    # fi
+    # 🚨 Modificación Crítica para Debian-based: añade dbconfig-common y dbconfig-mysql al purgar
     if [ "$OS" = "Debian-based" ]; then
-        $SUDO apt-get autoremove -y 2>/dev/null
-    elif [ "$OS" = "Fedora-based" ]; then
-        $SUDO dnf autoremove -y 2>/dev/null
+        #$SUDO $REMOVE_CMD $APACHE_S $DB_PKGS $PHP_PKGS $FZ_PKG $PMA_PKG dbconfig-common dbconfig-mysql 2>/dev/null
+        DEBIAN_FRONTEND=noninteractive $SUDO $REMOVE_CMD $APACHE_S $DB_PKGS $PHP_PKGS $FZ_PKG $PMA_PKG dbconfig-common dbconfig-mysql -y -q
+        $SUDO apt-get autoremove --purge -y 2>/dev/null
+        $SUDO apt-get clean 2>/dev/null
+    else
+        $SUDO $REMOVE_CMD $APACHE_S $DB_PKGS $PHP_PKGS $FZ_PKG $PMA_PKG 2>/dev/null
+        if [ "$OS" = "Fedora-based" ]; then
+            $SUDO dnf autoremove -y 2>/dev/null
+        fi
     fi
 fi
 
@@ -176,20 +203,43 @@ fi
 
 # 5. Pregunta crítica: ¿Eliminar los directorios de datos de las bases de datos?
 echo "------------------------------------------------------------------------------"
-read -p "¿Deseas borrar permanentemente los directorios de datos y configuraciones de MySQL/MariaDB? [s/N]: " RESPUESTA
-if [[ "$RESPUESTA" =~ ^[Ss]$ ]]; then
-    echo " Borrando datos residuales de las bases de datos..."
-    if [ "$OS" = "macOS" ]; then
-        rm -rf /opt/homebrew/var/mysql 2>/dev/null
-        rm -rf /usr/local/var/mysql 2>/dev/null
-    else
-        $SUDO rm -rf /var/lib/mysql 2>/dev/null
-        $SUDO rm -rf /etc/mysql /etc/my.cnf /etc/my.cnf.d /etc/httpd /etc/apache2 2>/dev/null
-    fi
+# read -p "¿Deseas borrar permanentemente los directorios de datos y configuraciones de MySQL/MariaDB? [s/N]: " RESPUESTA
+# if [[ "$RESPUESTA" =~ ^[Ss]$ ]]; then
+#     echo " Borrando datos residuales de las bases de datos..."
+#     if [ "$OS" = "macOS" ]; then
+#         rm -rf /opt/homebrew/var/mysql 2>/dev/null
+#         rm -rf /usr/local/var/mysql 2>/dev/null
+#     else
+#         $SUDO rm -rf /var/lib/mysql 2>/dev/null
+#         $SUDO rm -rf /etc/mysql /etc/my.cnf /etc/my.cnf.d /etc/httpd /etc/apache2 2>/dev/null
+#     fi
+# else
+#     echo " Se han conservado los directorios de datos de la base de datos."
+# fi
+# 5. 🚨 BORRADO AUTOMÁTICO DE DATOS (Sin interactividad para facilitar pruebas de clonación)
+echo " Borrando datos residuales y archivos de configuración antiguos..."
+if [ "$OS" = "macOS" ]; then
+    rm -rf /opt/homebrew/var/mysql /usr/local/var/mysql 2>/dev/null
+    rm -rf /opt/homebrew/etc/httpd /opt/homebrew/etc/php 2>/dev/null
 else
-    echo " Se han conservado los directorios de datos de la base de datos."
+    # Limpieza exhaustiva de datos del motor y sockets bloqueantes
+    $SUDO rm -rf /var/lib/mysql /var/lib/mysql-files /var/log/mysql /var/log/mariadb 2>/dev/null
+    
+    # # Limpieza total de rutas de configuración huérfanas en el sistema
+    # $SUDO rm -rf /etc/mysql /etc/my.cnf /etc/my.cnf.d /etc/phpmyadmin /etc/dbconfig-common 2>/dev/null
+    
+    # # Solo eliminar configuraciones globales de servidores si no hay más desarrollos
+    # if [ "$OS" = "Debian-based" ] || [ "$OS" = "SUSE-based" ]; then
+    #     $SUDO rm -rf /etc/apache2 2>/dev/null
+    # else
+    #     $SUDO rm -rf /etc/httpd 2>/dev/null
+    # fi
+    
+    #  MANTÉN SOLO ESTO (Es seguro y no rompe reinstalaciones):
+    $SUDO rm -rf /var/lib/mysql /var/lib/mysql-files /var/log/mysql /var/log/mariadb 2>/dev/null
 fi
 
 echo "=============================================================================="
-echo " ¡El sistema ha sido revertido en base a tu configuración de instalación!"
+#echo " ¡El sistema ha sido revertido en base a tu configuración de instalación!"
+echo " ✅ DESINSTALACIÓN COMPLETADA CON ÉXITO"
 echo "=============================================================================="
