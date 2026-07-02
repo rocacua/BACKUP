@@ -150,7 +150,21 @@ instalar_dependencias(){
             if ! command -v dotnet &>/dev/null; then
                 pintar "➜ .NET SDK no detectado. Instalando..." "alerta"
                 if [ "$OS" = "macOS" ]; then brew install --cask dotnet-sdk
-                elif [ "$OS" = "Debian-based" ]; then $SUDO apt-get update && $SUDO apt-get install -y dotnet-sdk-8.0
+                #elif [ "$OS" = "Debian-based" ]; then $SUDO apt-get update && $SUDO apt-get install -y dotnet-sdk-8.0
+                elif [ "$OS" = "Debian-based" ]; then
+                    # Solución específica para Debian 13 Testing (Trixie)
+                    if lsb_release -c 2>/dev/null | grep -q "trixie" || grep -q "trixie" /etc/os-release; then
+                        pintar "➜ Detectado Debian 13 (Trixie). Usando instalador oficial de Microsoft..." "alerta"
+                        asegurar_curl  # <- Se instala solo aquí si es necesario
+                        # Crear el directorio con sudo antes de instalar
+                        $SUDO mkdir -p /usr/share/dotnet
+                        # Descarga y ejecuta el script oficial de binarios de Microsoft
+                        curl -sSL https://dot.net/v1/dotnet-install.sh | $SUDO bash /dev/stdin --channel 8.0 --install-dir /usr/share/dotnet
+                        # Enlace simbólico global para que 'dotnet' funcione en cualquier terminal
+                        $SUDO ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+                    else
+                        $SUDO apt-get update && $SUDO apt-get install -y dotnet-sdk-8.0
+                    fi
                 elif [ "$OS" = "Fedora-based" ]; then $SUDO dnf install -y dotnet-sdk-8.0
                 elif [ "$OS" = "Arch-based" ]; then $SUDO pacman -S --noconfirm dotnet-sdk
                 elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install dotnet-sdk-8.0; fi
@@ -273,6 +287,16 @@ intentar_instalacion() {
         COMANDO_ARRANQUE="snap run $snap_pkg"
     fi
 }
+asegurar_curl() {
+    if ! command -v curl &>/dev/null; then
+        pintar "➜ Esta acción requiere 'curl'. Instalando dependencia..." "alerta"
+        if [ "$OS" = "macOS" ]; then brew install curl
+        elif [ "$OS" = "Debian-based" ]; then $SUDO apt-get update && $SUDO apt-get install -y curl
+        elif [ "$OS" = "Fedora-based" ]; then $SUDO dnf install -y curl
+        elif [ "$OS" = "Arch-based" ]; then $SUDO pacman -S --noconfirm curl
+        elif [ "$OS" = "SUSE-based" ]; then $SUDO zypper --non-interactive install curl; fi
+    fi
+}
 ejecutar_instalacion_ide() {
     pintar "➜ Instalando $IDE_NAME mediante canales oficiales..." "menu"
     
@@ -390,12 +414,29 @@ ejecutar_instalacion_ide() {
                 fi 
                 ;;
             cursor)
+                # Invocar la función antes de empezar las descargas de Cursor
+                asegurar_curl
                 # MODIFICACIÓN DINÁMICA DE URLS SEGÚN LA DISTRIBUCIÓN (¡Aporte excelente!)
                 if [ "$OS" = "Debian-based" ]; then
+                    # Esperar y liberar de forma inteligente el candado de apt
+                    if $SUDO fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+                        pintar "➜ Detectado gestor de paquetes ocupado. Intentando liberar..." "alerta"
+                        # Forzar la terminación de cualquier proceso apt/dpkg colgado en segundo plano
+                        $SUDO killall apt apt-get dpkg 2>/dev/null
+                        sleep 2
+                        # Eliminar los archivos de bloqueo residuales si persisten
+                        $SUDO rm -f /var/lib/dpkg/lock-frontend
+                        $SUDO rm -f /var/lib/apt/lists/lock
+                        $SUDO rm -f /var/cache/apt/archives/lock
+                        # Reparar posibles instalaciones interrumpidas
+                        DEBIAN_FRONTEND=noninteractive $SUDO dpkg --configure -a
+                    fi
                     pintar "➜ Descargando paquete oficial .deb de Cursor..." "alerta"
                     #curl -L "https://api2.cursor.sh/updates/download/golden/linux-x64-deb/cursor/3.8" -o "$HOME/Applications/cursor.appimage"      
                     curl -L "https://api2.cursor.sh/updates/download/golden/linux-${ARCH}-deb/cursor/latest" -o /tmp/cursor.deb
-                    $SUDO apt-get update && $SUDO apt-get install -y /tmp/cursor.deb
+                    #$SUDO apt-get update && $SUDO apt-get install -y /tmp/cursor.deb
+                    # Definimos la interfaz como no interactiva y aceptamos el repositorio de forma automática
+                    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" /tmp/cursor.deb
                     rm -f /tmp/cursor.deb
                     # Al ser nativo .deb, el comando global instalado en el sistema es 'cursor'
                     COMANDO_ARRANQUE="cursor"
@@ -564,19 +605,20 @@ configurar_plugins_ide() {
             fi
             
             case $PERFIL in
-                1)  $BIN_CMD --install-extension xdebug.php-debug >/dev/null
+                1)  $BIN_CMD --install-extension xdebug.php-debug >/dev/null 2>&1
                     # if [ "$IDE_NAME" = "vscode" ]
                     #     $BIN_CMD --install-extension bmewburn.vscode-langserver-php >/dev/null
                     # else
                     #     $BIN_CMD --install-extension bmewburn.vscode-intelephense-client >/dev/null
                     # fi
-                    $BIN_CMD --install-extension bmewburn.vscode-intelephense-client >/dev/null
-                    $BIN_CMD --install-extension dbaeumer.vscode-eslint >/dev/null
-                    $BIN_CMD --install-extension esbenp.prettier-vscode >/dev/null ;;
-                2)  $BIN_CMD --install-extension vscjava.vscode-java-pack >/dev/null ;;
-                3)  $BIN_CMD --install-extension ms-dotnettools.csdevkit >/dev/null ;;
-                4)  $BIN_CMD --install-extension timonwong.shellcheck >/dev/null
-                    $BIN_CMD --install-extension mads-hartmann.bash-checker >/dev/null ;;
+                    $BIN_CMD --install-extension bmewburn.vscode-intelephense-client >/dev/null 2>&1
+                    $BIN_CMD --install-extension dbaeumer.vscode-eslint >/dev/null 2>&1
+                    $BIN_CMD --install-extension esbenp.prettier-vscode >/dev/null 2>&1 ;;
+                2)  $BIN_CMD --install-extension vscjava.vscode-java-pack >/dev/null 2>&1 ;;
+                3)  $BIN_CMD --install-extension ms-dotnettools.csharp >/dev/null 2>&1 ;;
+                    #$BIN_CMD --install-extension ms-dotnettools.csdevkit >/dev/null ;;                    
+                4)  $BIN_CMD --install-extension timonwong.shellcheck >/dev/null 2>&1
+                    $BIN_CMD --install-extension mads-hartmann.bash-checker >/dev/null 2>&1 ;;
             esac
             pintar "✓ Plugins inyectados correctamente en $IDE_NAME." "exito"
         else
@@ -655,6 +697,7 @@ instalar_ia_local() {
     pintar "=== CONFIGURACIÓN DE IA EN LOCAL ===" "menu"
     read -p "$(pintar "¿Instalar asistente IA local (Ollama+Qwen)?: [s/N]: " "prompt" 0)" RESPUESTA_IA
     if [[ "$RESPUESTA_IA" =~ ^[Ss]$ ]]; then
+        asegurar_curl  # <- Asegura curl justo antes del script de Ollama
         curl -fsSL https://ollama.com/install.sh | sh
         if command -v ollama &>/dev/null; then
             ollama run qwen2.5-coder:1.5b --nowait >/dev/null 2>&1 &
