@@ -180,12 +180,13 @@ if [ ! -z "$DB_NAME" ] && command -v mysql &> /dev/null; then
     pintar "Detectada base de datos potencial: '$DB_NAME'" "alerta"
     read -p "$(printf "${MAGENTA_B}[PREGUNTA] ¿Quieres intentar borrar la BD '$DB_NAME' en MySQL? (s/n): ${NC}")" borrar_db
     if [[ "$borrar_db" == "s" || "$borrar_db" == "S" ]]; then
-        read -p "$(printf "${MAGENTA_B}Usuario MySQL [root]: ${NC}")" db_user
-        db_user="${db_user:-root}"
-        echo -n "$(printf "${MAGENTA_B}Contraseña MySQL (oculta): ${NC}")"
+        read -p "$(printf "${MAGENTA_B}Usuario MySQL [admin]: ${NC}")" db_user
+        db_user="${db_user:-admin}"
+        echo -n "$(printf "${MAGENTA_B}Contraseña MySQL [admin]: ${NC}")"
         read -s db_pass
         echo ""
-        
+        db_pass="${db_pass:-admin}"
+
         mysql -h localhost -u "$db_user" -p"$db_pass" -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" 2>/dev/null
         if [ $? -eq 0 ]; then
             pintar "Base de datos '$DB_NAME' eliminada con éxito." "exito"

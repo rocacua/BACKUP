@@ -552,6 +552,7 @@ else
     if [ "$OS" = "SUSE-based" ]; then
         VHOST_CONF="<VirtualHost *:80>
         ServerName prueba.test
+        ServerAlias www.prueba.test
         DocumentRoot \"$DIR_PRUEBA\"
         <Directory \"$DIR_PRUEBA\">
             Options Indexes FollowSymLinks MultiViews
@@ -562,6 +563,7 @@ else
     else
         VHOST_CONF="<VirtualHost *:80>
         ServerName prueba.test
+        ServerAlias www.prueba.test
         DocumentRoot \"$DIR_PRUEBA\"
         <Directory \"$DIR_PRUEBA\">
             Options Indexes FollowSymLinks

@@ -9,7 +9,7 @@ declare -r DIR_SCRIPT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null &
 fecha=$(date +%Y-%m-%d_%H-%M-%S)
 
 LOG_DIR="$DIR_SCRIPT/logs"
-LOG_FILE="$LOG_DIR/instalador_ide-${fecha}.log"
+LOG_FILE="$LOG_DIR/creaweb-${fecha}.log"
 
 if [[ ! -d "$LOG_DIR" ]]; then
     mkdir -p "$LOG_DIR" 2>/dev/null
@@ -17,7 +17,7 @@ fi
 
 if [[ ! -w "$LOG_DIR" ]]; then
     LOG_DIR="$HOME"
-    LOG_FILE="$LOG_DIR/instalador_ide-${fecha}.log"
+    LOG_FILE="$LOG_DIR/creaweb-${fecha}.log"
     mkdir -p "$LOG_DIR" 2>/dev/null
 fi
 
@@ -192,12 +192,35 @@ detectar_dependencias() {
     pintar "➜ Analizando dependencias globales de desarrollo..." "menu"
     
     # HTTPD / Apache
+    # ==========================================
+    # 🌐 DETECCIÓN UNIVERSAL DE APACHE
+    # ==========================================
+    instalado_apache="n"
     if [ "$OS" = "macOS" ]; then
         command -v httpd &> /dev/null && instalado_apache="s"
     else
-        (command -v apache2 &> /dev/null || command -v httpd &> /dev/null) && instalado_apache="s"
+        # 1. Crear una lista con todos los nombres de binario y rutas posibles en Linux
+        local rutas_apache=(
+            "apache2" "httpd"
+            "/usr/sbin/apache2" "/usr/sbin/httpd"
+            "/usr/local/bin/apache2" "/usr/sbin/apachectl"
+        )
+        # 2. Escaneo cruzado inteligente
+        for elemento in "${rutas_apache[@]}"; do
+            if [[ "$elemento" == /* ]]; then
+                # Si es ruta absoluta, verificamos que el archivo exista
+                [ -f "$elemento" ] && instalado_apache="s" && break
+            else
+                # Si es un comando simple, usamos command -v
+                command -v "$elemento" &> /dev/null && instalado_apache="s" && break
+            fi
+        done
     fi
-    [ "$instalado_apache" = "s" ] && pintar "Servidor Apache detectado." "alerta"
+    if [ "$instalado_apache" = "s" ]; then
+        pintar "Servidor Apache detectado." "alerta"
+    else
+        pintar "⚠ Servidor Apache no detectado en el sistema." "error"
+    fi
 
     # Java JDK
     if command -v java &> /dev/null || [ -n "$JAVA_HOME" ]; then
@@ -338,13 +361,15 @@ pedir_datos_bd() {
     read -p "$(pintar "Nombre de la Base de Datos [${crear_web}]: " "prompt" 0)" db_name
     db_name="${db_name:-$crear_web}"
     
-    read -p "$(pintar "Usuario de la Base de Datos [root]: " "prompt" 0)" db_user
-    db_user="${db_user:-root}"
+    read -p "$(pintar "Usuario de la Base de Datos [admin]: " "prompt" 0)" db_user
+    db_user="${db_user:-admin}"
     
     # Para contraseñas, usamos -s para que no se vea textualmente en la terminal (seguridad)
-    echo -n "$(pintar "Contraseña de la Base de Datos (oculta): " "prompt" 0)"
+    echo -n "$(pintar "Contraseña de la Base de Datos [admin]: " "prompt" 0)"
     read -s db_pass
     echo "" # Salto de línea necesario tras usar read -s
+    # Si el usuario presiona ENTER, asumimos la contraseña por defecto 'admin'
+    db_pass="${db_pass:-admin}"
 }
 
 configurar_vhost_apache() {
@@ -415,6 +440,7 @@ configurar_vhost_apache() {
         $SUDO tee "$vhost_file" > /dev/null <<EOF
 <VirtualHost *:80>
     ServerName $dominio_limpio
+    ServerAlias www.$dominio_limpio
     DocumentRoot "$path_web"
     <Directory "$path_web">
         Options Indexes FollowSymLinks MultiViews
@@ -428,10 +454,24 @@ EOF
 
 
         # Habilitar el sitio específicamente en distribuciones tipo Debian/Ubuntu
-        if [ "$OS" = "Debian-based" ] && command -v a2ensite &> /dev/null; then
-            $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
-            $SUDO a2enmod rewrite > /dev/null
+        # if [ "$OS" = "Debian-based" ] && command -v a2ensite &> /dev/null; then
+        #     $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
+        #     $SUDO a2enmod rewrite > /dev/null
+        # fi
+        # HABILITACIÓN UNIVERSAL: Comprobamos si el comando existe en el PATH OR si el archivo físico está en /usr/sbin
+        if command -v a2ensite &> /dev/null || [ -f /usr/sbin/a2ensite ]; then
+            local nombre_fichero=$(basename "$vhost_file")
+            pintar "➜ Habilitando el sitio $nombre_fichero en Apache..." "menu"
+            # Invocar usando el path absoluto o el comando con sudo de forma segura
+            if [ -f /usr/sbin/a2ensite ]; then
+                $SUDO /usr/sbin/a2ensite "$nombre_fichero" > /dev/null 2>&1
+                $SUDO /usr/sbin/a2enmod rewrite > /dev/null 2>&1
+            else
+                $SUDO a2ensite "$nombre_fichero" > /dev/null 2>&1
+                $SUDO a2enmod rewrite > /dev/null 2>&1
+            fi
         fi
+
 
         # Reiniciar Apache para aplicar cambios
         pintar "➜ Reiniciando el servidor Apache para aplicar el VHost..." "menu"
@@ -480,7 +520,6 @@ EOF
         fi
         pintar "VirtualHost configurado y Apache reiniciado." "exito"
 
-        pintar "VirtualHost configurado y Apache reiniciado." "exito"
     else
         pintar "No se encontró el directorio de configuración de Apache ($apache_conf_dir). El VHost debe crearse manualmente." "alerta"
     fi
@@ -500,10 +539,11 @@ crear_wordpress() {
     read -p "$(pintar "Usuario administrador [admin]: " "prompt" 0)" wp_user
     wp_user="${wp_user:-admin}"
     
-    echo -n "$(pintar "Contraseña del administrador (oculta): " "prompt" 0)"
+    echo -n "$(pintar "Contraseña del administrador [admin]: " "prompt" 0)"
     read -s wp_pass
     echo ""
-    wp_pass="${wp_pass:-AdminPassword123!}"
+    #wp_pass="${wp_pass:-AdminPassword123!}"
+    wp_pass="${wp_pass:-admin}"
 
     wp() {
         php -d memory_limit=-1 /usr/local/bin/wp "$@"
@@ -536,6 +576,13 @@ crear_wordpress() {
         --dbhost="$db_host" \
         --dbcharset="utf8mb4" \
         --allow-root
+    # VALIDACIÓN CRÍTICA: Si el archivo wp-config.php no se creó, la contraseña o el usuario fallaron
+    if [ ! -f "wp-config.php" ]; then
+        echo ""
+        pintar "❌ Error crítico: Las credenciales de MySQL proporcionadas fueron rechazadas." "error"
+        pintar "Asegúrate de usar el usuario 'admin' y la contraseña que configuraste en installamp.sh." "alerta"
+        exit 1
+    fi
 
     # 5. Intentar crear la base de datos automáticamente si no existe
     pintar "➜ Comprobando / Creando la base de datos en MySQL..." "menu"
@@ -691,6 +738,26 @@ crear_codeigniter() {
     local path_padre=$(dirname "$path_web")
     local nombre_carpeta=$(basename "$path_web")
     cd "$path_padre" || exit 1
+
+    pintar "➜ Asegurando extensiones de PHP requeridas para CodeIgniter 4..." "alerta"            
+    # Inyección automatizada de dependencias según el sistema operativo
+    if [ "$OS" = "Debian-based" ]; then
+        $SUDO apt-get update && $SUDO apt-get install -y php-intl php-zip php-xml php-mbstring unzip > /dev/null 2>&1
+    elif [ "$OS" = "Fedora-based" ]; then
+        $SUDO dnf install -y php-intl php-pecl-zip php-xml php-mbstring unzip > /dev/null 2>&1
+    elif [ "$OS" = "SUSE-based" ]; then
+        $SUDO zypper --non-interactive install php-intl php-zip php-xml php-mbstring unzip > /dev/null 2>&1
+    elif [ "$OS" = "Arch-based" ]; then
+        # En Arch el binario ya está, solo hay que desmarcar ';extension=intl' en el php.ini
+        if [ -f /etc/php/php.ini ]; then
+            # Quitar el comentario de la extensión intl
+            $SUDO sed -i 's/;extension=intl/extension=intl/g' /etc/php/php.ini
+            # Quitar el comentario de la extensión zip (también requerida por Composer)
+            $SUDO sed -i 's/;extension=zip/extension=zip/g' /etc/php/php.ini
+            # Reiniciar httpd para que Arch cargue las extensiones en caliente
+            $SUDO systemctl restart httpd 2>/dev/null
+        fi
+    fi
 
     pintar "➜ Creando proyecto CodeIgniter 4 vía Composer..." "menu"
     composer create-project codeigniter4/appstarter "$nombre_carpeta" --no-interaction --ignore-platform-reqs
@@ -1323,12 +1390,19 @@ EOF
         local vhost_file="$apache_conf_dir/${dominio_limpio}.conf"
         # Definir rutas de logs según el sistema operativo antes de crear el VirtualHost
         local log_dir="/var/log/httpd"
-        [ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+        #[ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+        [[ "$OS" = "Debian-based" || "$OS" = "SUSE-based" ]] && log_dir="/var/log/apache2"
+        [ "$OS" = "macOS" ] && log_dir="/usr/local/var/log/httpd"
+
+        # Aseguramos que la carpeta de logs exista por si acaso
+        $SUDO mkdir -p "$log_dir" 2>/dev/null
+
+        # Plantilla limpia usando la ruta de logs fija calculada por Bash
 
         $SUDO tee "$vhost_file" > /dev/null <<EOF
 <VirtualHost *:80>
     ServerName $dominio_limpio
-
+    ServerAlias www.$dominio_limpio
     ProxyPreserveHost On
     ProxyPass / http://127.0.0.1:3000
     ProxyPassReverse / http://127.0.0.1:3000
@@ -1340,14 +1414,21 @@ EOF
 
         # Si estás en Debian/Ubuntu, activamos los módulos necesarios para que funcione el proxy
         if [ "$OS" = "Debian-based" ]; then
-            $SUDO a2enmod proxy > /dev/null 2>&1
-            $SUDO a2enmod proxy_http > /dev/null 2>&1
-            if command -v a2ensite &> /dev/null; then
-                $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
+            # $SUDO a2enmod proxy > /dev/null 2>&1
+            # $SUDO a2enmod proxy_http > /dev/null 2>&1
+            # if command -v a2ensite &> /dev/null; then
+            #     $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
+            # fi
+            $SUDO /usr/sbin/a2enmod proxy > /dev/null 2>&1
+            $SUDO /usr/sbin/a2enmod proxy_http > /dev/null 2>&1
+            if [ -f /usr/sbin/a2ensite ]; then
+                $SUDO /usr/sbin/a2ensite "${dominio_limpio}.conf" > /dev/null 2>&1
             fi
         fi
 
-        $restart_cmd &> /dev/null
+        #$restart_cmd &> /dev/null
+        # Aplicar el reinicio completo para inyectar los nuevos módulos proxy en la RAM
+        eval "$restart_cmd" &> /dev/null
         [ "$OS" = "Fedora-based" ] && $SUDO setsebool -P httpd_can_network_connect 1 2>/dev/null
     fi
     # Asegurar que estamos dentro de la carpeta antes de lanzar Node
@@ -1467,12 +1548,18 @@ EOF
         local vhost_file="$apache_conf_dir/${dominio_limpio}.conf"
         # Definir rutas de logs según el sistema operativo antes de crear el VirtualHost
         local log_dir="/var/log/httpd"
-        [ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+        #[ "$OS" != "Fedora-based" ] && [ "$OS" != "SUSE-based" ] && log_dir="\${APACHE_LOG_DIR}"
+        [[ "$OS" = "Debian-based" || "$OS" = "SUSE-based" ]] && log_dir="/var/log/apache2"
+        [ "$OS" = "macOS" ] && log_dir="/usr/local/var/log/httpd"
 
+        # Aseguramos que la carpeta de logs exista
+        $SUDO mkdir -p "$log_dir" 2>/dev/null
+
+        # Plantilla limpia con barras inclinadas obligatorias en el ProxyPass
         $SUDO tee "$vhost_file" > /dev/null <<EOF
 <VirtualHost *:80>
     ServerName $dominio_limpio
-
+    ServerAlias www.$dominio_limpio
     ProxyPreserveHost On
     ProxyPass / http://127.0.0.1:5000
     ProxyPassReverse / http://127.0.0.1:5000
@@ -1484,14 +1571,26 @@ EOF
 
         # Si estás en Debian/Ubuntu, activar módulos de proxy de Apache si no lo están
         if [ "$OS" = "Debian-based" ]; then
-            $SUDO a2enmod proxy > /dev/null 2>&1
-            $SUDO a2enmod proxy_http > /dev/null 2>&1
-            if command -v a2ensite &> /dev/null; then
-                $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
+            # $SUDO a2enmod proxy > /dev/null 2>&1
+            # $SUDO a2enmod proxy_http > /dev/null 2>&1
+            # if command -v a2ensite &> /dev/null; then
+            #     $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null
+            # fi
+            $SUDO /usr/sbin/a2enmod proxy > /dev/null 2>&1
+            $SUDO /usr/sbin/a2enmod proxy_http > /dev/null 2>&1
+            # Corrección del PATH de Debian
+            if command -v a2ensite &> /dev/null || [ -f /usr/sbin/a2ensite ]; then
+                if [ -f /usr/sbin/a2ensite ]; then
+                    $SUDO /usr/sbin/a2ensite "${dominio_limpio}.conf" > /dev/null 2>&1
+                else
+                    $SUDO a2ensite "${dominio_limpio}.conf" > /dev/null 2>&1
+                fi
             fi
         fi
 
-        $restart_cmd &> /dev/null
+        #$restart_cmd &> /dev/null
+        # Aplicar el reinicio completo para montar las nuevas tablas del proxy en memoria
+        eval "$restart_cmd" &> /dev/null
         # Permitir a Apache realizar conexiones de red hacia el puerto 5000 (Imprescindible en Fedora)
         [ "$OS" = "Fedora-based" ] && $SUDO setsebool -P httpd_can_network_connect 1 2>/dev/null
     fi
@@ -1572,7 +1671,7 @@ orquestar_creacion_web() {
 # 🚀 INICIO DEL SCRIPT
 # ==========================================
 pintar "##################################################INI##################################################"
-pintar "Asistente Inteligente de Selección e Instalación de IDEs: $HORA_INICIO_HUMANA"
+pintar "Asistente Inteligente de Selección y Creación de entornos web: $HORA_INICIO_HUMANA"
 pintar "##################################################INI##################################################"
 
 # DETECCIÓN DE S.O.

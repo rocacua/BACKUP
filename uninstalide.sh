@@ -252,9 +252,9 @@ eliminar_configuracion() {
             #rm -rf "$user_dir/.vscode-oss" "$user_dir/.config/VSCodium" "$user_dir/Library/Application Support/VSCodium" 2>/dev/null ;;
             rm -rf "$user_dir/.vscode-oss" "$user_dir/.config/VSCodium" "$user_dir/Library/Application Support/VSCodium" "$user_dir/.continue" 2>/dev/null ;;
         "cursor")
-            rm -rf "$user_dir/.cursor" "$user_dir/.config/Cursor" "$user_dir/Library/Application Support/Cursor" "$user_dir/Applications/cursor.appimage" "$user_dir/snap/intellij-idea-community" 2>/dev/null ;;
+            rm -rf "$user_dir/.cursor" "$user_dir/.config/Cursor" "$user_dir/Library/Application Support/Cursor" "$user_dir/Applications/cursor.appimage" "$user_dir/snap/cursor" 2>/dev/null ;;
         "intellij")
-            rm -rf "$user_dir/.config/JetBrains" "$user_dir/.cache/JetBrains" "$user_dir/Library/Application Support/JetBrains" 2>/dev/null ;;
+            rm -rf "$user_dir/.config/JetBrains" "$user_dir/.cache/JetBrains" "$user_dir/Library/Application Support/JetBrains" "$user_dir/snap/intellij-idea-community" 2>/dev/null ;;
         "netbeans")
             rm -rf "$user_dir/.netbeans" "$user_dir/.cache/netbeans" "$user_dir/Library/Application Support/NetBeans" 2>/dev/null ;;
         "eclipse")
@@ -307,6 +307,13 @@ desinstalar_ide() {
                 	$SUDO rm -f /usr/local/bin/nvim 2>/dev/null
                         $SUDO apt-get purge -y neovim 2>/dev/null 
                         ;;
+                "cursor")
+                    # 1. Purgar repositorio APT/DNF si se instaló nativamente
+                    $SUDO apt-get purge -y cursor 2>/dev/null
+                    $SUDO rm -f /etc/apt/sources.list.d/cursor.list 2>/dev/null
+                    # 2. Borrar binarios AppImage en rutas comunes
+                    $SUDO rm -f /usr/local/bin/cursor /usr/bin/cursor 2>/dev/null
+                    ;;
                 *)  
                     local snap_real_pkg="$target_ide"
                     [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
@@ -317,7 +324,10 @@ desinstalar_ide() {
             case "$target_ide" in
                 "vscode")         $SUDO dnf remove -y code && $SUDO rm -f /etc/yum.repos.d/vscode.repo 2>/dev/null ;;
                 "vscodium")       $SUDO dnf remove -y codium && $SUDO rm -f /etc/yum.repos.d/vscodium.repo 2>/dev/null ;;
-                "cursor")         $SUDO dnf remove -y cursor 2>/dev/null ;;
+                "cursor")         $SUDO dnf remove -y cursor 2>/dev/null 
+                                  $SUDO rm -f /etc/yum.repos.d/cursor.repo 2>/dev/null
+                                  # Limpieza de AppImages globales
+                                  $SUDO rm -f /usr/local/bin/cursor /usr/bin/cursor 2>/dev/null ;;
                 "neovim")         $SUDO dnf remove -y neovim 2>/dev/null ;;
                 *)  
                     local snap_real_pkg="$target_ide"
@@ -332,6 +342,10 @@ desinstalar_ide() {
                 "neovim")         # Forzar la eliminación de neovim y TODOS los parsers basura del sistema
                                   $SUDO zypper --non-interactive remove neovim tree-sitter-vimdoc tree-sitter-query tree-sitter-vim tree-sitter-lua tree-sitter-c tree-sitter-markdown tree-sitter-python 2>/dev/null
                                   ;;
+                "cursor")         $SUDO zypper --non-interactive remove cursor 2>/dev/null
+                                  $SUDO rm -f /etc/zypp/repos.d/cursor.repo 2>/dev/null
+                                  # Limpieza de AppImages globales
+                                  $SUDO rm -f /usr/local/bin/cursor /usr/bin/cursor 2>/dev/null ;;
                 *)  
                     local snap_real_pkg="$target_ide"
                     [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
@@ -345,6 +359,9 @@ desinstalar_ide() {
                 "neovim")         $SUDO pacman -Rns --noconfirm neovim 2>/dev/null ;;
                 "eclipse")        $SUDO pacman -Rns --noconfirm eclipse-java 2>/dev/null ;;
                 "android-studio") $SUDO pacman -Rns --noconfirm android-studio 2>/dev/null ;;
+                "cursor")         $SUDO pacman -Rns --noconfirm cursor-bin 2>/dev/null
+                                  # Limpieza de AppImages globales
+                                  $SUDO rm -f /usr/local/bin/cursor /usr/bin/cursor 2>/dev/null ;;
                 *)  
                     local snap_real_pkg="$target_ide"
                     [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
