@@ -144,7 +144,7 @@ detectar_ides() {
 
     if [ "$OS" = "macOS" ]; then
         [ -d "/Applications/IntelliJ IDEA Community Edition.app" ] && IDES_INSTALADOS[intellij]="s"
-        [ -d "/Applications/NetBeans.app" ] || [ -d "/Applications/Apache NetBeans.app" ] && IDES_INSTALADOS[netbeans]="s"
+        ( [ -d "/Applications/NetBeans.app" ] || [ -d "/Applications/Apache NetBeans.app" ] ) && IDES_INSTALADOS[netbeans]="s"
         [ -d "/Applications/Visual Studio Code.app" ] && IDES_INSTALADOS[vscode]="s"
         [ -d "/Applications/VSCodium.app" ] && IDES_INSTALADOS[vscodium]="s"
         [ -d "/Applications/Cursor.app" ] && IDES_INSTALADOS[cursor]="s"
@@ -210,7 +210,11 @@ detectar_dependencias() {
     fi
 }
 detectar_ia_local() {
-    if command -v ollama &> /dev/null || systemctl is-active ollama &> /dev/null; then
+    # if command -v ollama &> /dev/null || systemctl is-active ollama &> /dev/null; then
+    #     instalado_ia="s"
+    #     pintar "Asistente de IA Local (Ollama) detectado." "alerta"
+    # fi
+    if command -v ollama &> /dev/null || curl -s http://localhost:11434/ &>/dev/null; then
         instalado_ia="s"
         pintar "Asistente de IA Local (Ollama) detectado." "alerta"
     fi
@@ -242,11 +246,13 @@ eliminar_configuracion() {
     
     case "$target_ide" in
         "vscode")
-            rm -rf "$user_dir/.vscode" "$user_dir/.config/Code" "$user_dir/Library/Application Support/Code" 2>/dev/null ;;
+            #rm -rf "$user_dir/.vscode" "$user_dir/.config/Code" "$user_dir/Library/Application Support/Code" 2>/dev/null ;;
+            rm -rf "$user_dir/.vscode" "$user_dir/.config/Code" "$user_dir/Library/Application Support/Code" "$user_dir/.continue" 2>/dev/null ;;
         "vscodium")
-            rm -rf "$user_dir/.vscode-oss" "$user_dir/.config/VSCodium" "$user_dir/Library/Application Support/VSCodium" 2>/dev/null ;;
+            #rm -rf "$user_dir/.vscode-oss" "$user_dir/.config/VSCodium" "$user_dir/Library/Application Support/VSCodium" 2>/dev/null ;;
+            rm -rf "$user_dir/.vscode-oss" "$user_dir/.config/VSCodium" "$user_dir/Library/Application Support/VSCodium" "$user_dir/.continue" 2>/dev/null ;;
         "cursor")
-            rm -rf "$user_dir/.cursor" "$user_dir/.config/Cursor" "$user_dir/Library/Application Support/Cursor" "$user_dir/Applications/cursor.appimage" 2>/dev/null ;;
+            rm -rf "$user_dir/.cursor" "$user_dir/.config/Cursor" "$user_dir/Library/Application Support/Cursor" "$user_dir/Applications/cursor.appimage" "$user_dir/snap/intellij-idea-community" 2>/dev/null ;;
         "intellij")
             rm -rf "$user_dir/.config/JetBrains" "$user_dir/.cache/JetBrains" "$user_dir/Library/Application Support/JetBrains" 2>/dev/null ;;
         "netbeans")
@@ -254,10 +260,17 @@ eliminar_configuracion() {
         "eclipse")
             rm -rf "$user_dir/.eclipse" "$user_dir/eclipse-workspace" "$user_dir/Library/Application Support/Eclipse" 2>/dev/null ;;
         "android-studio")
-            rm -rf "$user_dir/.android" "$user_dir/.AndroidStudio"* "$user_dir/Android/Sdk" "$user_dir/Library/Application Support/AndroidStudio"* 2>/dev/null 
+            rm -rf "$user_dir/.android" "$user_dir/.AndroidStudio"* "$user_dir/Android/Sdk" "$user_dir/Library/Application Support/AndroidStudio"* "$user_dir/snap/android-studio" 2>/dev/null 
             # Eliminar KVM si estamos en Linux
             if [ "$OS" != "macOS" ]; then
-                $SUDO usermod -dG kvm,libvirt "$user_home" 2>/dev/null
+                #$SUDO usermod -dG kvm,libvirt "$user_home" 2>/dev/null
+                if [ "$OS" = "Debian-based" ]; then
+                    $SUDO deluser "$user_home" kvm 2>/dev/null
+                    $SUDO deluser "$user_home" libvirt 2>/dev/null
+                else
+                    $SUDO gpasswd -d "$user_home" kvm 2>/dev/null
+                    $SUDO gpasswd -d "$user_home" libvirt 2>/dev/null
+                fi
             fi ;;
         "neovim")
             rm -rf "$user_dir/.config/nvim" "$user_dir/.local/share/nvim" "$user_dir/.cache/nvim" /usr/local/bin/nvim 2>/dev/null ;;
@@ -267,8 +280,9 @@ eliminar_configuracion() {
 }
 desinstalar_ide() {
     local target_ide="$1"
-    [ -z "$target_ide" ] || [ "$target_ide" = "ninguno" ] && return 0
-
+    if [ -z "$target_ide" ] || [ "$target_ide" = "ninguno" ]; then
+        return 0
+    fi
     pintar "⚙️ Desinstalando binarios del IDE: $target_ide..." "alerta"
 
     if [ "$OS" = "macOS" ]; then
@@ -293,7 +307,11 @@ desinstalar_ide() {
                 	$SUDO rm -f /usr/local/bin/nvim 2>/dev/null
                         $SUDO apt-get purge -y neovim 2>/dev/null 
                         ;;
-                *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
+                *)  
+                    local snap_real_pkg="$target_ide"
+                    [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
+                    $SUDO snap remove "$snap_real_pkg" 2>/dev/null 
+                    ;;
             esac
         elif [ "$OS" = "Fedora-based" ]; then
             case "$target_ide" in
@@ -301,7 +319,11 @@ desinstalar_ide() {
                 "vscodium")       $SUDO dnf remove -y codium && $SUDO rm -f /etc/yum.repos.d/vscodium.repo 2>/dev/null ;;
                 "cursor")         $SUDO dnf remove -y cursor 2>/dev/null ;;
                 "neovim")         $SUDO dnf remove -y neovim 2>/dev/null ;;
-                *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
+                *)  
+                    local snap_real_pkg="$target_ide"
+                    [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
+                    $SUDO snap remove "$snap_real_pkg" 2>/dev/null 
+                    ;;
             esac
         elif [ "$OS" = "SUSE-based" ]; then
             case "$target_ide" in
@@ -310,7 +332,11 @@ desinstalar_ide() {
                 "neovim")         # Forzar la eliminación de neovim y TODOS los parsers basura del sistema
                                   $SUDO zypper --non-interactive remove neovim tree-sitter-vimdoc tree-sitter-query tree-sitter-vim tree-sitter-lua tree-sitter-c tree-sitter-markdown tree-sitter-python 2>/dev/null
                                   ;;
-                *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
+                *)  
+                    local snap_real_pkg="$target_ide"
+                    [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
+                    $SUDO snap remove "$snap_real_pkg" 2>/dev/null 
+                    ;;
             esac
         elif [ "$OS" = "Arch-based" ]; then
             case "$target_ide" in
@@ -319,7 +345,11 @@ desinstalar_ide() {
                 "neovim")         $SUDO pacman -Rns --noconfirm neovim 2>/dev/null ;;
                 "eclipse")        $SUDO pacman -Rns --noconfirm eclipse-java 2>/dev/null ;;
                 "android-studio") $SUDO pacman -Rns --noconfirm android-studio 2>/dev/null ;;
-                *)                $SUDO snap remove "$target_ide" 2>/dev/null ;;
+                *)  
+                    local snap_real_pkg="$target_ide"
+                    [ "$target_ide" = "intellij" ] && snap_real_pkg="intellij-idea-community"
+                    $SUDO snap remove "$snap_real_pkg" 2>/dev/null 
+                    ;;
             esac
         fi
     fi
@@ -373,9 +403,12 @@ desinstalar_java() {
     elif [ "$OS" = "Fedora-based" ]; then 
         $SUDO dnf remove -y java-*-openjdk* 2>/dev/null
     elif [ "$OS" = "SUSE-based" ]; then
-        $SUDO zypper --non-interactive remove java--openjdk 2>/dev/null
+        $SUDO zypper --non-interactive remove "java-*-openjdk*" 2>/dev/null
     elif [ "$OS" = "Arch-based" ]; then
-        $SUDO pacman -Rns --noconfirm $(pacman -Qq | grep jdk) 2>/dev/null
+        local pkgs_java=$(pacman -Qq | grep -E "jdk|jre|openjdk" 2>/dev/null)
+        if [ -n "$pkgs_java" ]; then
+            $SUDO pacman -Rns --noconfirm $pkgs_java 2>/dev/null
+        fi
     fi
 
     pintar "✓ Java desinstalado correctamente." "exito"
@@ -404,12 +437,15 @@ desinstalar_ia_local() {
     else
         # Detener y deshabilitar servicios del sistema
         $SUDO systemctl stop ollama 2>/dev/null
+        $SUDO killall ollama 2>/dev/null # <-- Matar en caliente remanentes
+        sleep 1
         $SUDO systemctl disable ollama 2>/dev/null
         $SUDO rm -f /etc/systemd/system/ollama.service 2>/dev/null
         $SUDO systemctl daemon-reload
         # Eliminar binarios y usuarios del sistema
         $SUDO rm -f /usr/local/bin/ollama 2>/dev/null
         $SUDO rm -rf /usr/share/ollama 2>/dev/null
+        $SUDO rm -rf /var/lib/ollama 2>/dev/null # <-- CRÍTICO: Aquí se guardan los modelos en Linux
         $SUDO userdel ollama 2>/dev/null
         $SUDO groupdel ollama 2>/dev/null
         # Borrar modelos guardados en el HOME de los usuarios
@@ -452,6 +488,7 @@ desinstalar_python() {
         brew uninstall python-pip 2>/dev/null
     elif [ "$OS" = "Debian-based" ]; then
         $SUDO apt-get purge -y python3-pip python3-venv 2>/dev/null
+        $SUDO apt-get autoremove -y 2>/dev/null 
     elif [ "$OS" = "Fedora-based" ]; then
         $SUDO dnf remove -y python3-pip 2>/dev/null
     elif [ "$OS" = "SUSE-based" ]; then
@@ -493,7 +530,8 @@ else
     DISTRO_PRETY="${PRETTY_NAME}"
     DISTRO_VERSION="${VERSION_ID}"
 
-    if [[ "$ALL_IDS" =~ "ubuntu" || "$ALL_IDS" =~ "debian" || "$ALL_IDS" =~ "linuxmint" ]]; then
+    #if [[ "$ALL_IDS" =~ "ubuntu" || "$ALL_IDS" =~ "debian" || "$ALL_IDS" =~ "linuxmint" ]]; then
+    if [[ "$ALL_IDS" =~ (ubuntu|debian|linuxmint) ]]; then
             OS="Debian-based"
             INSTALL_CMD="apt-get install -y"
             SUDO="sudo"
@@ -506,17 +544,18 @@ else
                 # Esto te devolverá "22.04", "24.04", etc., incluso ejecutándose dentro de Linux Mint o Pop!_OS
                 VERSION_BASE_UBUNTU=$(lsb_release -u -r 2>/dev/null | awk '{print $2}')
             fi
-    elif [[ "$ALL_IDS" =~ "fedora" || "$ALL_IDS" =~ "rhel" || "$ALL_IDS" =~ "centos" ]]; then
+    elif [[ "$ALL_IDS" =~ (fedora|rhel|centos) ]]; then
             OS="Fedora-based"
             INSTALL_CMD="dnf install -y"
             SUDO="sudo"
-            UPDATE_CMD="dnf check-update"
-    elif [[ "$ALL_IDS" =~ "arch" || "$ALL_IDS" =~ "manjaro" || "$ALL_IDS" =~ "endeavouros" ]]; then
+            #UPDATE_CMD="dnf check-update"
+            UPDATE_CMD="dnf makecache"
+    elif [[ "$ALL_IDS" =~ (arch|manjaro|endeavouros) ]]; then
             OS="Arch-based"
             INSTALL_CMD="pacman -S --noconfirm"
             SUDO="sudo"
             UPDATE_CMD="pacman -Sy"
-    elif [[ "$ALL_IDS" =~ "suse" || "$ALL_IDS" =~ "opensuse" ]]; then
+    elif [[ "$ALL_IDS" =~ (suse|opensuse) ]]; then
             OS="SUSE-based"
             INSTALL_CMD="zypper --non-interactive install"
             SUDO="sudo"
@@ -554,14 +593,14 @@ read -p "$(pintar "Introduce una opción [1-8] Salir=0: " "prompt" 0)" desinstal
 
 # Mapear el ID seleccionado a una cadena de texto para la función principal
 IDE_A_BORRAR="ninguno"
-[ "$desinstala_ide" -eq 1 ] && IDE_A_BORRAR="intellij"
-[ "$desinstala_ide" -eq 2 ] && IDE_A_BORRAR="netbeans"
-[ "$desinstala_ide" -eq 3 ] && IDE_A_BORRAR="eclipse"
-[ "$desinstala_ide" -eq 4 ] && IDE_A_BORRAR="vscode"
-[ "$desinstala_ide" -eq 5 ] && IDE_A_BORRAR="vscodium"
-[ "$desinstala_ide" -eq 6 ] && IDE_A_BORRAR="cursor"
-[ "$desinstala_ide" -eq 7 ] && IDE_A_BORRAR="neovim"
-[ "$desinstala_ide" -eq 8 ] && IDE_A_BORRAR="android-studio"
+[ "${desinstala_ide:-0}" -eq 1 ] && IDE_A_BORRAR="intellij"
+[ "${desinstala_ide:-0}" -eq 2 ] && IDE_A_BORRAR="netbeans"
+[ "${desinstala_ide:-0}" -eq 3 ] && IDE_A_BORRAR="eclipse"
+[ "${desinstala_ide:-0}" -eq 4 ] && IDE_A_BORRAR="vscode"
+[ "${desinstala_ide:-0}" -eq 5 ] && IDE_A_BORRAR="vscodium"
+[ "${desinstala_ide:-0}" -eq 6 ] && IDE_A_BORRAR="cursor"
+[ "${desinstala_ide:-0}" -eq 7 ] && IDE_A_BORRAR="neovim"
+[ "${desinstala_ide:-0}" -eq 8 ] && IDE_A_BORRAR="android-studio"
 
 # Capturar decisiones en cascada para no interrumpir la ejecución después
 CONFIRM_GIT="n"; CONFIRM_APACHE="n"; CONFIRM_JAVA="n"; CONFIRM_DOTNET="n"; CONFIRM_IA="n"; CONFIRM_NODE="n"; CONFIRM_PYTHON="n"

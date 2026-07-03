@@ -224,7 +224,13 @@ instalar_via_snap() {
 
     # 1. Si snap ya está instalado, procedemos directo
     if command -v snap &> /dev/null; then 
+        pintar "➜ Instalando $snap_pkg de forma universal vía Snap..." "menu"
         sudo snap install "$snap_pkg" --classic
+        # ¡CRÍTICO! Validar si el comando falló o se canceló aquí también:
+        if [ $? -ne 0 ]; then
+            pintar "❌ Error: La instalación de $snap_pkg ha fallado o fue cancelada." "error"
+            exit 1
+        fi
         return 0
     fi
 
@@ -233,6 +239,9 @@ instalar_via_snap() {
     
     if [ "$OS" = "Debian-based" ]; then
         sudo apt-get update && sudo apt-get install -y snapd
+        # Forzar la reactivación limpia del demonio para evitar el bloqueo del "automatic restart"
+        sudo systemctl daemon-reload
+        sudo systemctl enable --now snapd.socket snapd
         sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null
 
     elif [ "$OS" = "Fedora-based" ]; then
@@ -258,13 +267,41 @@ instalar_via_snap() {
     sleep 3
 
     # 3. Intentar instalar el paquete ahora que el motor Snap está activo
+    # pintar "➜ Instalando $snap_pkg de forma universal a través de Snap..." "menu"
+    # sudo snap install "$snap_pkg" --classic
+    
+    # if [ $? -ne 0 ]; then
+    #     pintar "❌ Error crítico: No se pudo instalar '$snap_pkg' incluso utilizando la contingencia de Snap." "error"
+    #     exit 1
+    # fi
+    # 1. Localizar de forma segura el binario de snap en el sistema
+    local snap_binario
+    snap_binario=$(command -v snap)
+
+    # 2. Contingencia si no está mapeado aún en el $PATH actual (Común tras instalar en caliente)
+    if [ -z "$snap_binario" ]; then
+        if [ -x "/usr/bin/snap" ]; then
+            snap_binario="/usr/bin/snap"
+        elif [ -x "/var/lib/snapd/snap/bin/snap" ]; then
+            snap_binario="/var/lib/snapd/snap/bin/snap"
+        elif [ -x "/snap/bin/snap" ]; then
+            snap_binario="/snap/bin/snap"
+        else
+            snap_binario="snap" # Último recurso por defecto
+        fi
+    fi
+
+    # 3. Lanzar la instalación utilizando el binario correcto
     pintar "➜ Instalando $snap_pkg de forma universal a través de Snap..." "menu"
-    sudo snap install "$snap_pkg" --classic
+    sudo "$snap_binario" install "$snap_pkg" --classic
     
     if [ $? -ne 0 ]; then
         pintar "❌ Error crítico: No se pudo instalar '$snap_pkg' incluso utilizando la contingencia de Snap." "error"
         exit 1
     fi
+
+    # 4. Establecer el comando de arranque de manera inequívoca y global
+    COMANDO_ARRANQUE="$snap_binario run $snap_pkg"
 }
 # ==============================================================================
 # 🔄 FUNCIÓN PUENTE: INTENTO NATIVO CON DELEGACIÓN DE CONCEPTO
@@ -347,13 +384,13 @@ ejecutar_instalacion_ide() {
                 fi ;;
             netbeans) 
                 if [ "$OS" = "SUSE-based" ]; then
-                    intentar_instalacion "zypper --non-interactive install netbeans" "netbeans --classic"
+                    intentar_instalacion "zypper --non-interactive install netbeans" "netbeans"
                     [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
                 elif [ "$OS" = "Debian-based" ]; then
-                    intentar_instalacion "apt-get install -y netbeans" "netbeans --classic"
+                    intentar_instalacion "apt-get install -y netbeans" "netbeans"
                     [ "$COMANDO_ARRANQUE" != "snap run netbeans" ] && COMANDO_ARRANQUE="netbeans"
                 else
-                    instalar_via_snap "netbeans --classic"
+                    instalar_via_snap "netbeans"
                     COMANDO_ARRANQUE="snap run netbeans"  
                 fi ;;
             vscode)
@@ -409,7 +446,7 @@ ejecutar_instalacion_ide() {
                     [ "$COMANDO_ARRANQUE" != "snap run codium" ] && COMANDO_ARRANQUE="codium"
                 else
                     # Fallback universal para otros sistemas usando confinamiento clásico para evitar problemas con compiladores
-                    instalar_via_snap "codium --classic"
+                    instalar_via_snap "codium"
                     COMANDO_ARRANQUE="snap run codium"  
                 fi 
                 ;;
@@ -502,9 +539,9 @@ ejecutar_instalacion_ide() {
                         pintar "⚠ Falló la descarga del AppImage. Intentando instalación nativa..." "alerta"
                         
                         if [ -f /usr/bin/zypper ]; then
-                            intentar_instalacion "zypper in -y neovim" "neovim"
+                            intentar_instalacion "zypper in -y neovim" "nvim"
                         else
-                            intentar_instalacion "apt-get install -y --no-install-recommends neovim" "neovim"
+                            intentar_instalacion "apt-get install -y --no-install-recommends neovim" "nvim"
                         fi
                         [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
                     fi
@@ -517,7 +554,7 @@ ejecutar_instalacion_ide() {
                         CMD_FINAL="$INSTALL_CMD neovim"
                     fi
 
-                    intentar_instalacion "$CMD_FINAL" "neovim"
+                    intentar_instalacion "$CMD_FINAL" "nvim"
                     [ "$COMANDO_ARRANQUE" != "snap run neovim" ] && COMANDO_ARRANQUE="nvim"
                 fi
                 ;;
@@ -526,7 +563,7 @@ ejecutar_instalacion_ide() {
                 if [ "$OS" = "Debian-based" ] || [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ]; then
                     pintar "➜ Instalando Eclipse de forma universal vía Snap..." "alerta"
                     # Eclipse requiere confinamiento clásico para poder compilar y leer proyectos del disco duro
-                    instalar_via_snap "eclipse --classic"
+                    instalar_via_snap "eclipse"
                     COMANDO_ARRANQUE="snap run eclipse"
                 elif [ "$OS" = "Arch-based" ]; then
                     # Arch Linux mantiene Eclipse actualizado de forma nativa en sus repositorios principales
@@ -541,7 +578,7 @@ ejecutar_instalacion_ide() {
                 if [ "$OS" = "Debian-based" ] || [ "$OS" = "Fedora-based" ] || [ "$OS" = "SUSE-based" ]; then
                     pintar "➜ Instalando Android Studio de forma universal vía Snap..." "alerta"
                     # Requiere --classic para poder interactuar con los dispositivos USB conectados (teléfonos reales)
-                    instalar_via_snap "android-studio --classic"
+                    instalar_via_snap "android-studio"
                     COMANDO_ARRANQUE="snap run android-studio"
                 elif [ "$OS" = "Arch-based" ]; then
                     pintar "➜ Instalando Android Studio desde el repositorio nativo en Arch Linux..." "alerta"
@@ -698,12 +735,94 @@ instalar_ia_local() {
     read -p "$(pintar "¿Instalar asistente IA local (Ollama+Qwen)?: [s/N]: " "prompt" 0)" RESPUESTA_IA
     if [[ "$RESPUESTA_IA" =~ ^[Ss]$ ]]; then
         asegurar_curl  # <- Asegura curl justo antes del script de Ollama
-        curl -fsSL https://ollama.com/install.sh | sh
-        if command -v ollama &>/dev/null; then
-            ollama run qwen2.5-coder:1.5b --nowait >/dev/null 2>&1 &
-            IA_LOCAL_INSTALADA="SI"
-            pintar "✓ IA instalándose. Usa 'Continue' en el IDE." "exito"
+        # curl -fsSL https://ollama.com/install.sh | sh
+        # if command -v ollama &>/dev/null; then
+        #     ollama run qwen2.5-coder:1.5b --nowait >/dev/null 2>&1 &
+        #     IA_LOCAL_INSTALADA="SI"
+        #     pintar "✓ IA instalándose. Usa 'Continue' en el IDE." "exito"
+        # fi
+        # 1. Instalación de Ollama multiplataforma
+        if [ "$OS" = "macOS" ]; then
+            pintar "➜ Instalando Ollama vía Homebrew..." "alerta"
+            brew install ollama
+            # Levantar el demonio en macOS en segundo plano de forma nativa
+            nohup ollama serve >/dev/null 2>&1 &
+            sleep 3
+        else
+            pintar "➜ Instalando Ollama de forma oficial..." "alerta"
+            curl -fsSL https://ollama.com/install.sh | sh
         fi
+
+        # 2. Descarga del modelo de forma síncrona con barra de progreso real
+        # Esperar activamente a que el servidor de Ollama esté escuchando
+        pintar "➜ Esperando a que el servidor de Ollama se active..." "alerta"
+        local retries=10
+        while ! curl -s http://localhost:11434/ >/dev/null && [ $retries -gt 0 ]; do
+            sleep 2
+            retries=$((retries - 1))
+        done
+        # Ahora que el servidor responde con certeza, forzamos la descarga síncrona
+        if command -v ollama &>/dev/null; then
+            pintar "➜ Descargando e indexando modelo Qwen2.5-Coder:1.5b de forma local..." "menu"
+            ollama pull qwen2.5-coder:1.5b
+            IA_LOCAL_INSTALADA="SI"
+        else
+            pintar "❌ No se pudo localizar el binario de Ollama." "error"
+        fi
+
+        # 3. Preconfigurar el archivo JSON de Continue de forma transparente
+        local RUTA_CONTINUE=""
+        if [ "$OS" = "macOS" ]; then
+            RUTA_CONTINUE="$HOME/.continue"
+        else
+            RUTA_CONTINUE="$HOME/.continue"
+        fi
+        
+        mkdir -p "$RUTA_CONTINUE"
+        
+        # Escribir la configuración nativa directamente apuntando a tu Ollama local
+        cat <<'EOF' > "$RUTA_CONTINUE/config.json"
+{
+  "models": [
+    {
+      "title": "Qwen 2.5 Coder",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:1.5b"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Qwen 2.5 Coder Autocomplete",
+    "provider": "ollama",
+    "model": "qwen2.5-coder:1.5b"
+  }
+}
+EOF
+        # Definir las rutas del archivo de estado según el entorno
+        local RUTA_STATE_CODIUM="$HOME/.config/VSCodium/User/globalStorage/continuedev.continue"
+        local RUTA_STATE_CODE="$HOME/.config/Code/User/globalStorage/continuedev.continue"
+        local RUTA_STATE_MAC="$HOME/Library/Application Support/VSCodium/User/globalStorage/continuedev.continue"
+
+        # Crear los directorios internos de persistencia del IDE
+        mkdir -p "$RUTA_STATE_CODIUM" "$RUTA_STATE_CODE" 2>/dev/null
+        [ "$OS" = "macOS" ] && mkdir -p "$RUTA_STATE_MAC" 2>/dev/null
+
+        # Contenido JSON del estado para forzar la selección automática de Qwen
+        local STATE_CONTENT
+        read -r -d '' STATE_CONTENT <<'EOF'
+{
+  "selectedModelTitle": "Qwen 2.5 Coder"
+}
+EOF
+
+        # Volcar el archivo state.json en sus respectivas ubicaciones
+        if [ "$OS" = "macOS" ]; then
+            echo "$STATE_CONTENT" > "$RUTA_STATE_MAC/state.json" 2>/dev/null
+        else
+            echo "$STATE_CONTENT" > "$RUTA_STATE_CODIUM/state.json" 2>/dev/null
+            echo "$STATE_CONTENT" > "$RUTA_STATE_CODE/state.json" 2>/dev/null
+        fi
+
+        pintar "✓ IA y extensiones configuradas de manera nativa." "exito"
     fi
 }
 
