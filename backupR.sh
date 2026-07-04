@@ -646,12 +646,18 @@ descargar_sftp() {
 	# local usuario_host="52094416.es.strato-hosting.eu@ssh.strato.com"
 	# local ruta_remota="/mail/" # El punto indica la raíz del hosting, o pon '/public_html' si existe
 	# local ruta_local="/home/ricardo/Documentos/P/"
-    local dirorig="$1"
-    local dirdest="$2"
-    local simula="$3"
+    local dirorig="${1:-}"
+    local dirdest="${2:-}"
+    local simula="${3:-0}"
     local ruta_local=""
     local cmd=""
     local archivo_errores="/tmp/sftp_err_$$.log"
+	local es_subida=0
+	local sftp_batch="/tmp/sftp_batch_$$"
+
+    # Forzar a 0 si simula viene vacío por error de llamada
+    if [[ -z "$simula" ]]; then simula=0; fi
+
     # --- CASO 1: AMBOS REMOTOS (Efecto Puente) ---
     if is_remote_url "$dirorig" && is_remote_url "$dirdest"; then
         log "Ambas rutas son remotas. Usando modo puente local..." "alerta"
@@ -659,13 +665,13 @@ descargar_sftp() {
         local puente_local="/tmp/sftp_puente_$$"
         # 2. Descargar del primer remoto al puente local
         log "Paso 1/2: Descargando origen al puente local..."
-        if ! descargar_sftp "$dirorig" "$puente_local"; then
+        if ! descargar_sftp "$dirorig" "$puente_local" "0"; then
             log "Fallo en el paso 1 del puente (descarga)." "error"
             return 1
         fi
         # 3. Subir del puente local al segundo remoto
         log "Paso 2/2: Subiendo puente local al destino remoto..."
-        if ! descargar_sftp "$puente_local" "$dirdest"; then
+        if ! descargar_sftp "$puente_local" "$dirdest" "0"; then
             log "Fallo en el paso 2 del puente (subida)." "error"
             rm -rf "$puente_local"
             return 1
@@ -679,14 +685,16 @@ descargar_sftp() {
         parsear_ruta_remota "$dirorig"
         ruta_local="$dirdest"
         cmd="get -pr *"
+		es_subida=0
     else
         parsear_ruta_remota "$dirdest"
         ruta_local="$dirorig"
         cmd="put -pr *"
+		es_subida=1
     fi
 	local usuario_host="$host_remoto"
-	local ruta_remota="$ruta_remota"
-	if [ $simula -eq 1 ]; then
+	local r_remota="$ruta_remota"
+	if [ "$simula" -eq 1 ]; then
 		cmd="exit"
 	fi
 
@@ -694,12 +702,13 @@ descargar_sftp() {
     log "dirdest=$dirdest"
     log "ruta_local=$ruta_local"
     log "usuario_host=$usuario_host"
-    log "ruta_remota=$ruta_remota"
+    log "ruta_remota=$r_remota"
 
-    if [ ! -d "$ruta_local" ]; then
+	# Si es descarga, preparamos la carpeta local
+    if [ "$es_subida" -eq 0 ] && [ ! -d "$ruta_local" ]; then
 	    mkdir -p "$ruta_local"
     fi
-	log "Iniciando descarga segura vía SFTP..." "alerta"
+	#log "Iniciando descarga segura vía SFTP..." "alerta"
 
 # 	# Conectamos por SFTP y le pasamos los comandos de descarga automática
 # 	sftp -o BatchMode=no -b - "$usuario_host" <<EOF
@@ -718,13 +727,66 @@ descargar_sftp() {
 
     # --- EJECUCIÓN CON RECOLECCIÓN DE ERRORES ---
     # Redirigimos los fallos (2>) al archivo temporal.
-    sftp -o BatchMode=no -b - "$usuario_host" 2>"$archivo_errores" <<EOF
-        cd "$ruta_remota"
-        lcd "$ruta_local"
-        $cmd
-        bye
-EOF
-    if [ $? -eq 0 ]; then
+#     sftp -o BatchMode=no -b - "$usuario_host" 2>"$archivo_errores" <<EOF
+#         cd "$r_remota"
+#         lcd "$ruta_local"
+#         $cmd
+#         bye
+# EOF
+#     if [ $? -eq 0 ]; then
+	# Limpieza previa del archivo batch por seguridad
+    rm -f "$sftp_batch"
+# --- LIMPIEZA DE RUTAS PARA STRATO (FORZAR RELATIVAS) ---
+    # Eliminamos barras duplicadas y CUALQUIER barra al principio para que sea relativa
+    local ruta_limpia=$(echo "$r_remota" | sed 's/\/\//\//g' | sed 's/^\/\+//' | sed 's/\/$//')
+
+    if [ "$es_subida" -eq 1 ] && [ "$simula" -eq 0 ]; then
+        log "Iniciando subida segura vía SFTP (Creando estructura remota)..." "alerta"
+        
+        # En lugar de adivinar si existen, generamos una secuencia de cd alternado con mkdir.
+        # SFTPBatch ejecutará secuencialmente. Ponemos '-' antes de mkdir para que si falla porque existe,
+        # SFTP no detenga el lote y continúe con el script.
+
+		# Estructura recursiva estática sin movernos del directorio inicial
+        local ruta_acumulada=""
+
+		# Guardar IFS actual para restaurarlo después
+        local old_ifs="$IFS"
+        IFS='/' read -r -a carpetas <<< "$ruta_limpia"
+		IFS="$old_ifs"
+        for carpeta in "${carpetas[@]}"; do
+            if [ -n "$carpeta" ]; then
+                if [ -z "$ruta_acumulada" ]; then
+                    ruta_acumulada="$carpeta"
+                else
+                    ruta_acumulada="$ruta_acumulada/$carpeta"
+                fi
+                # Intenta crear la ruta exacta acumulada desde la raíz.
+                # Si ya existe, el '-' ignora el fallo y continúa de forma segura.
+                echo "-mkdir \"$ruta_acumulada\"" >> "$sftp_batch"
+            fi
+        done
+    else
+        if [ "$simula" -eq 1 ]; then
+            log "Validando conectividad del directorio remoto vía SFTP..." "info"
+        else
+            log "Iniciando descarga segura vía SFTP..." "alerta"
+        fi
+    fi
+
+    # Añadir comandos de transferencia estándar al lote
+    echo "cd \"$ruta_limpia\"" >> "$sftp_batch"
+    echo "lcd \"$ruta_local\"" >> "$sftp_batch"
+    echo "$cmd" >> "$sftp_batch"
+    echo "bye" >> "$sftp_batch"
+
+    # --- EJECUCIÓN CON CONTROL DE ERRORES ---
+    sftp -o BatchMode=no -b "$sftp_batch" "$usuario_host" 2>"$archivo_errores"
+    local sftp_rc=$?
+
+    rm -f "$sftp_batch"
+
+    if [ $sftp_rc -eq 0 ]; then
         rm -f "$archivo_errores"
         return 0
     else
@@ -733,7 +795,10 @@ EOF
         if [ -s "$archivo_errores" ]; then
             log "Detalle del error devuelto por el servidor:" "error"
             while IFS= read -r linea; do
-                log "  -> $linea" "error"
+                # Filtrar mensajes comunes que no representan fallos reales de la copia
+                if [[ "$linea" != *"Failure"* ]] && [[ "$linea" != *"Permission denied"* || "$es_subida" -eq 0 ]]; then
+                    log "  -> $linea" "error"
+                fi
             done < "$archivo_errores"
         else
             log "El servidor no devolvió un mensaje de error específico (posible fallo de conexión/credenciales)." "error"
@@ -744,6 +809,29 @@ EOF
 
 }
 # fin descargar_strato
+# ==============================
+# ini check_remote_capabilities
+check_remote_capabilities() {
+    local remote_url="$1"
+    
+    # Si no es remoto, no aplica esta lógica
+    if ! is_remote_url "$remote_url"; then
+        return 0
+    fi
+
+    # Extraer el host (ej: usuario@ssh.strato.com)
+    local host_ssh="${remote_url%%:*}"
+    
+    # Intentamos ejecutar un comando rápido y seguro (uname) con un timeout corto
+    if ssh -o ConnectTimeout=5 -o BatchMode=no "$host_ssh" "uname" >/dev/null 2>&1; then
+        # El servidor permite ejecución de comandos SSH estándar
+        return 0
+    else
+        # Servidor capado (Strato o similar) o sin acceso SSH directo
+        return 1
+    fi
+}
+# fin check_remote_capabilities
 # ==============================
 # ini do_rsync
 do_rsync() {
@@ -803,7 +891,7 @@ do_rsync() {
 	src="${src%/}/"
 	dst="${dst%/}/"
 
-	log "INICIO RSYNC ($label): $start_time"
+	log "INICIO DE OPERACIÓN ($label): $start_time"
 	#echo "COMANDO: $( [[ "$use_sudo" =~ ^(yes|sudo)$ ]] && printf 'sudo ' )rsync ${modarr_ref[*]} ${modexclude_ref[*]} '$src' '$dst'" | tee -a "$logfile"
 	# limpiar dobles slashes y normalizar dst antes de parsear
 	dst="${dst%/}"
@@ -826,7 +914,7 @@ do_rsync() {
 	fi
 	cmd+=( "${modarr_ref[@]}" "${modexclude_ref[@]}" "$src" "$dst" )
 
-	echo "COMANDO: ${cmd[@]}" | tee -a "$logpath"
+	#echo "COMANDO: ${cmd[@]}" | tee -a "$logpath"
 	# local cmd=()
 	# if [[ "$use_sudo" = "sudo" ]]; then
 	# 	cmd=( sudo rsync )
@@ -853,9 +941,29 @@ do_rsync() {
 	if is_remote_url "$src" || is_remote_url "$dst"; then
     	# preferir rsync (ssh/scp) cuando el formato es user@host:/path o rsync://
     	if [[ "$src" =~ ^[^/]+@[^:]+: ]] || [[ "$dst" =~ ^[^/]+@[^:]+: ]] || [[ "$src" =~ ^rsync:// ]] || [[ "$dst" =~ ^rsync:// ]]; then
-        	# usar rsync (como ahora)
-        	"${cmd[@]}" 2>&1 | tee -a "$logpath" && true
-        	rsync_rc=${PIPESTATUS[0]}
+        	log "Probando conectividad rsync con el servidor remoto..." "alerta"
+        	
+        	# Verificación silenciosa no destructiva para validar si el rsync del servidor responde
+        	if rsync --dry-run "$src" "$dst" >/dev/null 2>&1; then
+				echo "COMANDO: ${cmd[@]}" | tee -a "$logpath"
+				# usar rsync (como ahora)
+				"${cmd[@]}" 2>&1 | tee -a "$logpath" && true
+				rsync_rc=${PIPESTATUS[0]}
+			else
+            	log "rsync está capado o inaccesible en el servidor (Común en Strato). Transfiriendo vía SFTP..." "alerta"
+            	
+            	# Convertir boleano de pruebas al formato requerido por descargar_sftp (0 o 1)
+            	local simula_sftp=0
+            	if [[ "$prueba_rsync" =~ ^[sS]$ ]]; then simula_sftp=1; fi
+            	
+            	descargar_sftp "$src" "$dst" "$simula_sftp"
+            	rsync_rc=$?
+            	if [[ $rsync_rc -eq 0 ]]; then
+                	log "Se consiguió descargar exitosamente mediante el fallback SFTP." "exito"
+            	else
+                	log "Error crítico: Tampoco se pudo transferir por SFTP." "error"
+            	fi
+        	fi
     	else
         	#Detectar si el origen es Google drive
         	# 1. Extraer el nombre del remoto (todo lo que está antes de los dos puntos)
@@ -925,6 +1033,177 @@ do_rsync() {
 	return $rsync_rc
 }
 # fin do_rsync
+# ==============================
+# ini crear_claves_ssh_automatico
+crear_claves_ssh_automatico() {
+    log "==============================" "menu"
+    log "CONFIGURACIÓN DE CLAVES SSH AUTOMÁTICA" "menu"
+    log "==============================" "menu"
+
+    local user_host=""
+    read -rp "$(pintar "Ingrese el usuario y host remoto (ej: usuario@ssh.strato.com): " "prompt")" user_host
+
+    # Validar formato simple (debe contener un carácter @)
+    if [[ -z "$user_host" || "$user_host" != *@* ]]; then
+        log "Formato inválido. Debe ser usuario@servidor" "error"
+        return 1
+    fi
+
+    local key_file="$HOME/.ssh/id_rsa"
+    local pub_key_file="${key_file}.pub"
+
+    # 1. Generar claves locales si no existen (Universal para cualquier distro)
+    if [ ! -f "$key_file" ]; then
+        log "Generando pareja de claves SSH RSA de 4096 bits localmente..." "info"
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+        ssh-keygen -t rsa -b 4096 -f "$key_file" -N "" -q
+        log "Claves creadas correctamente en tu máquina local." "exito"
+    else
+        log "Se detectó una clave SSH existente en tu máquina local." "info"
+    fi
+
+    # Archivos temporales de trabajo local
+    local sftp_batch="/tmp/sftp_keys_$$"
+    local archivo_errores="/tmp/sftp_keys_err_$$"
+    local local_auth_keys="/tmp/local_auth_keys_$$"
+    
+    rm -f "$sftp_batch" "$archivo_errores" "$local_auth_keys"
+    touch "$local_auth_keys"
+
+    log "Nota: A continuación se te pedirá la contraseña para sincronizar las llaves por SFTP." "alerta"
+
+    # 2. Paso 1: Asegurar carpeta remota .ssh e intentar descargar authorized_keys si ya existía
+    echo "-mkdir .ssh" >> "$sftp_batch"
+    echo "chmod 700 .ssh" >> "$sftp_batch"
+    echo "cd .ssh" >> "$sftp_batch"
+    echo "-get authorized_keys \"$local_auth_keys\"" >> "$sftp_batch"
+    echo "bye" >> "$sftp_batch"
+
+    sftp -o BatchMode=no -b "$sftp_batch" "$user_host" >/dev/null 2>"$archivo_errores"
+    rm -f "$sftp_batch"
+
+    # 3. Paso 2: Adjuntar localmente tu clave pública al archivo descargado de forma limpia
+    # Asegura un salto de línea y concatena el texto
+    echo "" >> "$local_auth_keys"
+    cat "$pub_key_file" >> "$local_auth_keys"
+    # Eliminar líneas vacías duplicadas para mantener el archivo limpio
+    sed -i '/^$/d' "$local_auth_keys"
+
+    # 4. Paso 3: Subir el archivo authorized_keys definitivo y dar permisos
+    rm -f "$sftp_batch"
+    echo "cd .ssh" >> "$sftp_batch"
+    echo "put \"$local_auth_keys\" authorized_keys" >> "$sftp_batch"
+    echo "chmod 600 authorized_keys" >> "$sftp_batch"
+    echo "bye" >> "$sftp_batch"
+
+    sftp -o BatchMode=no -b "$sftp_batch" "$user_host" >/dev/null 2>"$archivo_errores"
+    
+    local sftp_rc=$?
+    rm -f "$sftp_batch" "$local_auth_keys"
+
+    if [ $sftp_rc -eq 0 ]; then
+        rm -f "$archivo_errores"
+        log "======================================================" "exito"
+        log "[OK] ¡Proceso completado con éxito!" "exito"
+        log "El servidor remoto ya confía en tu máquina virtual." "exito"
+        log "A partir de ahora, el script NO te pedirá más contraseñas." "exito"
+        log "======================================================" "exito"
+        return 0
+    else
+        log "Error al subir la configuración de llaves definitiva por SFTP." "error"
+        if [ -s "$archivo_errores" ]; then
+            while IFS= read -r linea; do
+                log "  -> $linea" "error"
+            done < "$archivo_errores"
+        fi
+        rm -f "$archivo_errores"
+        return 1
+    fi
+}
+# fin crear_claves_ssh_automatico
+# ==============================
+# ini configurar_google_drive_rclone
+configurar_google_drive_rclone() {
+    log "==============================" "menu"
+    log "CONFIGURACIÓN AUTOMÁTICA DE GOOGLE DRIVE (RCLONE)" "menu"
+    log "==============================" "menu"
+
+    # 1. Verificar si rclone está instalado en la distribución
+    if ! command -v rclone >/dev/null 2>&1; then
+        log "[ALERTA] 'rclone' no está instalado en este sistema." "alerta"
+        log "Intentando instalar rclone de forma automática..." "info"
+        
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rclone
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y rclone
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm rclone
+        else
+            log "No se pudo detectar el gestor de paquetes. Por favor, instala rclone manualmente." "error"
+            return 1
+        fi
+    fi
+
+    local nombre_remoto=""
+    read -rp "Introduce un nombre para identificar esta cuenta Drive (ej: mi_drive): " nombre_remoto
+
+    if [[ -z "$nombre_remoto" || ! "$nombre_remoto" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        log "Nombre de remoto inválido. Usa solo letras, números, guiones o guiones bajos." "error"
+        return 1
+    fi
+
+    if rclone listremotes 2>/dev/null | grep -q "^${nombre_remoto}:"; then
+        log "Ya existe un almacenamiento configurado con el nombre '${nombre_remoto}'." "alerta"
+        read -rp "¿Deseas sobrescribirlo? (s/N): " renombrar
+        if [[ ! "$renombrar" =~ ^[sS]$ ]]; then
+            return 0
+        fi
+        # Eliminar el remoto existente para poder reconfigurarlo limpiamente
+        rclone config delete "$nombre_remoto" >/dev/null 2>&1
+    fi
+
+    log "Iniciando el asistente interactivo de Google Drive para entornos sin navegador..." "info"
+    log "=========================================================================" "alerta"
+    log "INSTRUCCIONES:" "alerta"
+    log "1. El asistente interactivo te hará varias preguntas breves." "alerta"
+    log "2. Pulsa [ENTER] (dejar en blanco) en 'client_id' y 'client_secret'." "alerta"
+    log "3. Selecciona la opción '1' (Acceso completo / Full access al Drive)." "alerta"
+    log "4. Deja vacíos 'root_folder_id' y 'service_account_file' (pulsa ENTER)." "alerta"
+    log "5. En 'Edit advanced config' responde 'n' (No)." "alerta"
+    log "6. MUY IMPORTANTE: Cuando pregunte 'Use web browser to automatically authenticate...'" "alerta"
+    log "   RESPONDE 'n' (No). Esto te generará el enlace web para copiar y pegar." "alerta"
+    log "=========================================================================" "alerta"
+    
+    # 2. Lanzamos el asistente de configuración interactivo enfocado únicamente en el nuevo remoto
+    # Esto garantiza compatibilidad absoluta con cualquier versión antigua o moderna de rclone
+    rclone config passwordless "$nombre_remoto" drive 2>/dev/null || rclone config edit
+
+    # Si la distro no soporta atajos avanzados, usamos la llamada guiada tradicional asistida:
+    if ! rclone listremotes 2>/dev/null | grep -q "^${nombre_remoto}:"; then
+        # El comando 'rclone config' tradicional es universal y no falla nunca
+        log "Abriendo el menú de rclone. Sigue los pasos indicados en las instrucciones de arriba." "info"
+        rclone config
+    fi
+
+    # 3. Validar si la configuración se guardó correctamente tras la interacción del usuario
+    if rclone listremotes 2>/dev/null | grep -q "^${nombre_remoto}:"; then
+        log "======================================================" "exito"
+        log "[OK] ¡Google Drive configurado con éxito!" "exito"
+        log "Ya puedes usar la ruta '${nombre_remoto}:' como origen o destino." "exito"
+        log "El script de backup lo detectará y usará automáticamente por rclone." "exito"
+        log "======================================================" "exito"
+        
+        log "Intentando listar directorios raíz de tu Drive para verificar la conexión:" "info"
+        rclone lsf --max-depth 1 "${nombre_remoto}:" 2>/dev/null || log "Nota: No se encontraron archivos o el Drive está vacío, pero la conexión es correcta." "alerta"
+        return 0
+    else
+        log "Hubo un error o se canceló el proceso de vinculación con Google Drive." "error"
+        return 1
+    fi
+}
+# fin configurar_google_drive_rclone
 # ==============================
 # ini modo no interactivo
 # --------------------------
@@ -1116,7 +1395,9 @@ menu(){
 	log "==============================" "menu"
 	log "1. Crear/Actualizar respaldo" "menu"
 	log "2. Restaurar respaldo" "menu"
-	log "0. SALIR" "menu"
+	log "3. Crear claves SSH públicas/privadas (Automatizar accesos)" "menu"
+	log "4. Vincular cuenta de Google Drive (Respaldos en la nube)" "menu"
+    log "0. SALIR" "menu"
 	#read -p "Opción: ${NC}" opcion #leer por terminal la opción
 	echo -e -n "$(pintar "Opción [1,2,0]: " "prompt")"
 	read -r opcion
@@ -1211,7 +1492,7 @@ bucle_respaldo(){
 }
 # fin bucle respaldo
 # ==============================
-#ini comprobaciones de espacio y formato de partición
+# ini comprobaciones de espacio y formato de partición
 comprobaciones(){
 	log "==============================" "menu"
 	log "Respaldo en directorio actual" "menu"
@@ -1258,6 +1539,7 @@ comprobaciones(){
 	log "Nombre del respaldo: $nom_origen"
 	log "Directorio de origen: $dirorigen"
 	log "Directorio de destino: $dirdestino"
+
 	if is_remote_url "$dirdestino"; then
     	#echo -e "${ROJO}[ERROR] El directorio de destino es remoto: $dirdestino ${NC}"
     	# dentro de la función comprobaciones, sustituir la rama remota por:
@@ -1298,59 +1580,181 @@ comprobaciones(){
     	fi
    	 
     	#read -p "${AMARILLO}Pulse una tecla para continuar...${NC}"
-   	return 1
+   		return 1
 	elif [ -d "$dirdestino" ]; then
-	#if [ "$existe_dst" = "0" ]; then
     	# --- Manejo especial para origen remoto ---
-    	if is_remote_url "$dirorigen"; then
-        	if [[ "$dirorigen" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
-            	origin_host="${BASH_REMATCH[1]}"
-            	origin_path="${BASH_REMATCH[2]%/}"
-        	else
-            	origin_host=""
-            	origin_path="$dirorigen"
-        	fi
+    	# if is_remote_url "$dirorigen"; then
+        # 	if [[ "$dirorigen" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+        #     	origin_host="${BASH_REMATCH[1]}"
+        #     	origin_path="${BASH_REMATCH[2]%/}"
+        # 	else
+        #     	origin_host=""
+        #     	origin_path="$dirorigen"
+        # 	fi
+        # 	log "Origen remoto detectado: ${origin_host}:${origin_path}"
+		# 	log "Verificando capacidades del servidor remoto..." "info"
+			
+		# 	# if ! check_remote_capabilities "$dirorigen"; then
+		# 	# 	log "[ALERTA] Servidor remoto restringido detectado (Capado). Asignando valores por defecto seguros." "alerta"
+		# 	if [[ "$origin_host" == *strato* ]] || ! ssh -o ConnectTimeout=3 -o BatchMode=no "$origin_host" "true" >/dev/null 2>&1; then
+		# 		log "[ALERTA] Servidor remoto restringido detectado (Strato/Capado). Forzando validación SFTP." "alerta"
+	
+		# 		# Valores por defecto para evitar errores matemáticos y bloqueos
+		# 		espacio_origen_bytes=0
+		# 		espacio_origen="0.000"
+		# 		formato_origen="ext4"
+		# 		particion_origen="[unknown]"
+				
+		# 		# Saltamos el bloque interactivo de cálculo SSH para este origen
+		# 		skip_remote_ssh_calc=1
+		# 	else
+		# 		skip_remote_ssh_calc=0
+		# 	fi
+		# else
+		# 	skip_remote_ssh_calc=0
+		# fi
+		# # --- COMPROBACIÓN DE ACCESO AL ORIGEN ---
+		# if is_remote_url "$dirorigen"; then
+		# 	if [[ "$skip_remote_ssh_calc" -eq 1 ]]; then
+		# 		# Si está capado (Strato), validamos la existencia usando tu función de SFTP en modo simulación (1)
+		# 		log "Validando existencia del directorio origen vía SFTP..."
+		# 		descargar_sftp "$dirorigen" "$dirdestino" 1
+		# 		if [ $? -eq 0 ]; then
+		# 			log "Origen remoto accesible mediante SFTP." "exito"
+		# 			espacio_origen_bytes=0
+		# 			espacio_origen="0.000"
+		# 			formato_origen="ext4"
+		# 			particion_origen="[unknown]"
+		# 		else
+		# 			log "No se pudo conectar por SFTP o no existe el directorio remoto: $dirorigen" "error"
+		# 			return 1
+		# 		fi
+		# 	else
+		# 		# Si NO está capado, procedemos con rsync/ssh/rclone estándar
+		# 		log "Obteniendo datos del origen remoto estándar: ${origin_host}:${origin_path}"
+		# 		if [[ "$dirorigen" =~ ^[^/]+@[^:]+: ]] || [[ "$dirorigen" =~ ^rsync:// ]]; then
+		# 			if ssh -o ConnectTimeout=5 "$origin_host" "test -d '$origin_path'" >/dev/null 2>&1; then
+		# 				log "Origen remoto accesible."
+		# 			else
+		# 				log "No se pudo verificar existencia del origen remoto de forma estándar: $dirorigen " "error"
+		# 				return 1
+		# 			fi
+		# 		else
+		# 			if command -v rclone >/dev/null 2>&1 && rclone lsf --max-depth 1 "$dirorigen" >/dev/null 2>&1; then
+		# 				log "Origen remoto accesible mediante rclone."
+		# 			else
+		# 				log "No se pudo conectar o no existe el origen remoto con rclone: $dirorigen " "error"
+		# 				return 1
+		# 			fi
+		# 		fi
+				
+		# 		# Obtener pesos del origen remoto no capado
+		# 		log "Obteniendo datos del origen"
+		# 		set +e
+		# 		espacio_origen_bytes=$(obtener_tamano_dir_bytes "$dirorigen")
+		# 		if [ "$espacio_origen_bytes" -gt 0 ] 2>/dev/null; then
+		# 			espacio_origen=$(awk -v b="$espacio_origen_bytes" 'BEGIN {printf "%.3f", (b/1073741824)}')
+		# 		else
+		# 			espacio_origen_bytes=0
+		# 			espacio_origen="0.000"
+		# 		fi
+		# 	fi
+		# fi
 
-        	log "Origen remoto detectado: ${origin_host}:${origin_path}"
-        	# Verificar existencia remota (permitir prompt de password si hace falta)
-        	if [[ "$dirdestino" =~ ^[^/]+@[^:]+: ]] || [[ "$dirdestino" =~ ^rsync:// ]]; then
-            	if ssh -o ConnectTimeout=5 "$origin_host" "test -d '$origin_path'" >/dev/null 2>&1; then
-                	log "Origen remoto accesible."
-            	else
-                	log "No se pudo verificar existencia del origen remoto: $dirorigen " "error"
-                	return 1
-            	fi
-        	else
-            	if command -v rclone >/dev/null 2>&1 && rclone lsf --max-depth 1 "$dirorigen" >/dev/null 2>&1; then
-                	log "Origen remoto accesible mediante rclone."
-            	else
-                	log "No se pudo conectar o no existe el origen remoto con rclone: $dirorigen " "error"
-                	#return 1
-                    
+		# =======================================================
+		# --- BLOQUE 1: EXTRACCIÓN Y DETECCIÓN PRELIMINAR -------
+		# =======================================================
+		if is_remote_url "$dirorigen"; then
+			if [[ "$dirorigen" =~ ^[^/]+@[^:]+: ]] || [[ "$dirorigen" =~ ^rsync:// ]]; then
+				if [[ "$dirorigen" =~ ^([^@]+@[^:]+):(.+)$ ]]; then
+					origin_host="${BASH_REMATCH[1]}"
+					origin_path="${BASH_REMATCH[2]%/}"
+				else
+					origin_host=""
+					origin_path="$dirorigen"
+				fi
+				log "Origen remoto SSH detectado: ${origin_host}:${origin_path}"
+				
+				if [[ "$origin_host" == *strato* ]] || ! ssh -o ConnectTimeout=3 -o BatchMode=no "$origin_host" "true" >/dev/null 2>&1; then
+					log "[ALERTA] Servidor remoto restringido detectado (Strato/Capado). Forzando validación SFTP." "alerta"
+					skip_remote_ssh_calc=1
+				else
+					skip_remote_ssh_calc=0
+				fi
+			else
+				log "Origen remoto Cloud (rclone) detectado: $dirorigen"
+				skip_remote_ssh_calc=1
+				
+				if command -v rclone >/dev/null 2>&1; then
+					log "Verificando existencia del directorio en la nube con rclone..."
+					if rclone lsf --max-depth 1 "$dirorigen" >/dev/null 2>&1; then
+						log "Origen remoto en la nube accesible mediante rclone." "exito"
+						espacio_origen_bytes=0
+						espacio_origen="0.000"
+						formato_origen="rclone"
+						particion_origen="[cloud]"
+					else
+						log "No se pudo conectar o no existe el directorio indicado en tu Drive: $dirorigen" "error"
+						return 1
+					fi
+				else
+					log "Ruta Cloud detectada pero rclone no está instalado en el sistema." "error"
+					return 1
+				fi
+			fi
+		else
+			skip_remote_ssh_calc=0
+		fi
+
+		# =======================================================
+		# --- BLOQUE 2: COMPROBACIÓN DE ACCESO AL ORIGEN ---------
+		# =======================================================
+		if is_remote_url "$dirorigen"; then
+			# Solo aplicamos la validación SFTP/SSH si la URL remota es de tipo usuario@host
+			if [[ "$dirorigen" =~ ^[^/]+@[^:]+: ]] || [[ "$dirorigen" =~ ^rsync:// ]]; then
+				if [[ "$skip_remote_ssh_calc" -eq 1 ]]; then
+					# Si está capado (Strato), validamos la existencia usando tu función de SFTP en modo simulación (1)
+					log "Validando existencia del directorio origen vía SFTP..."
 					descargar_sftp "$dirorigen" "$dirdestino" 1
-					#rc=$?
 					if [ $? -eq 0 ]; then
 						log "Origen remoto accesible mediante SFTP." "exito"
+						espacio_origen_bytes=0
+						espacio_origen="0.000"
+						formato_origen="ext4"
+						particion_origen="[unknown]"
 					else
 						log "No se pudo conectar por SFTP o no existe el directorio remoto: $dirorigen" "error"
 						return 1
 					fi
+				else
+					# Si NO está capado, procedemos con rsync/ssh estándar
+					log "Obteniendo datos del origen remoto estándar: ${origin_host}:${origin_path}"
+					if ssh -o ConnectTimeout=5 "$origin_host" "test -d '$origin_path'" >/dev/null 2>&1; then
+						log "Origen remoto accesible."
+					else
+						log "No se pudo verificar existencia del origen remoto de forma estándar: $dirorigen " "error"
+						return 1
+					fi
+					
+					# Obtener pesos del origen remoto no capado
+					log "Obteniendo datos del origen"
+					set +e
+					espacio_origen_bytes=$(obtener_tamano_dir_bytes "$dirorigen")
+					if [ "$espacio_origen_bytes" -gt 0 ] 2>/dev/null; then
+						espacio_origen=$(awk -v b="$espacio_origen_bytes" 'BEGIN {printf "%.3f", (b/1073741824)}')
+					else
+						espacio_origen_bytes=0
+						espacio_origen="0.000"
+					fi
+				fi
+			else
+				# Si es un remoto Cloud (rclone / Google Drive), ya fue validado en el bloque superior.
+				# No hacemos nada aquí para evitar que intente conectar usando SFTP.
+				:
+			fi
+		fi
 
-            	fi
-        	fi
-        	# Intentar obtener tamaño del origen remoto (opcional; no obligatorio)
-        	log "Obteniendo datos del origen"
-			# 1. APAGAMOS temporalmente el modo estricto de fallos
-			set +e
-			espacio_origen_bytes=$(obtener_tamano_dir_bytes "$dirorigen")
-			if [ "$espacio_origen_bytes" -gt 0 ]; then
-			#if espacio_origen_bytes=$(ssh "$origin_host" "du -sb '$origin_path'" 2>/dev/null | awk '{print $1}'); then
-				espacio_origen=$(awk -v b="$espacio_origen_bytes" 'BEGIN {printf "%.3f", (b/1073741824)}')
-        	else
-            	espacio_origen_bytes=0
-            	espacio_origen="0.000"
-        	fi
-
+		if is_remote_url "$dirorigen"; then
         	# Marcar `dirorigenC` con el valor remoto para evitar realpath en rutas remotas
         	dirorigenC="$dirorigen"
     	else
@@ -1362,23 +1766,20 @@ comprobaciones(){
         	log "El directorio de origen y destino no puede ser el mismo, para evitar bucles infinitos de copia." "error"
         	dirsincompatibles=1
     	elif [[ "$dirdestinoC" == "$dirorigenC/"* ]]; then
-        	log "${ROJO}[ERROR]: el destino no debe estar dentro del origen, para evitar bucles infinitos de copia." "error"
+        	log "[ERROR]: el destino no debe estar dentro del origen, para evitar bucles infinitos de copia." "error"
         	dirsincompatibles=1
     	fi
-		#Si el origen es remoto no trato de averiguar tamaños por que suele dar error
-		# if is_remote_url "$dirorigen"; then
-		# 	formato_origen="ext4"
-		# 	espacio_origen_bytes=0
-		# 	espacio_origen=0
-		# else
+		# --- PROCESAMIENTO FINAL DE ESPACIO Y FORMATOS ---
+		if [[ "$skip_remote_ssh_calc" -eq 0 ]] || ! is_remote_url "$dirorigen"; then
 			#Recojer datos de espacio y formato de partición
 			#formato_origen=$(df -TBG "$dirorigen" | awk 'NR==2 {print $2}')
 			formato_origen=$(obtener_tipo_fs "$dirorigen")
 			if [[ $formato_origen == "unknown" || $formato_origen == "-" || $formato_origen == "" ]]; then
-				$formato_origen="ext4"
+				formato_origen="ext4"
 			fi
 			#espacio_origen_bytes=$(du -sb "$dirorigen" 2>/dev/null | awk '{print $1}')
 			espacio_origen_bytes=$(obtener_tamano_dir_bytes "$dirorigen")
+			if [[ -z "$espacio_origen_bytes" ]]; then espacio_origen_bytes=0; fi
 			espacio_origen=$(awk -v b="$espacio_origen_bytes" '
 				function ceil(x){ return (x==int(x)? x : int(x)+1) }
 				BEGIN {
@@ -1387,7 +1788,9 @@ comprobaciones(){
 					if (v == 0 && b > 0) v = 0.001
 					printf "%.3f", v
 				}')
-		# fi
+			# Prevenir nulos si obtener_tamano_dir_bytes falla localmente
+			#espacio_origen=$(awk -v b="$espacio_origen_bytes" 'BEGIN {printf "%.3f", (b/1073741824)}')
+		fi
 		# 3. VOLVEMOS a encender el modo estricto para mantener la seguridad del script
 		set -e
     	#Recojer datos de espacio y formato de partición destino
@@ -2689,6 +3092,14 @@ menu #invocamos el menú
 	2)
     	restaurar_respaldo
     	;;
+	3)
+		crear_claves_ssh_automatico
+		read -rp "$(pintar "Presiona [ENTER] para volver al Menú..." "prompt")"
+		;;
+	4)
+		configurar_google_drive_rclone
+		read -rp "$(pintar "Presiona [ENTER] para volver al Menú..." "prompt")"
+		;;
 	0)
     	log "Bie cha!!" #salimos del case+menú
     	#sleep 3

@@ -151,7 +151,7 @@ else
                 DB_PKGS="mysql-server mysql-client"
                 DB_SERVICE="mysql"
             fi
-            PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick php-json php-mysqlnd"
+            PHP_PKGS="php php-cli php-common php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml php-bcmath imagemagick php-imagick php-json php-mysqlnd php-intl unzip"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="www-data"
@@ -167,7 +167,7 @@ else
             APACHE_S="httpd"
             DB_PKGS="mariadb-server" # En Fedora 'mariadb-server' arrastra las herramientas de cliente automáticamente
             DB_SERVICE="mariadb"
-            PHP_PKGS="php php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-json php-bcmath imagemagick php-pecl-imagick"
+            PHP_PKGS="php php-cli php-fpm php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-json php-bcmath imagemagick php-pecl-imagick php-intl php-pecl-zip unzip"
             FZ_PKG="filezilla"
             PMA_PKG="phpmyadmin"
             APACHE_USER="apache"
