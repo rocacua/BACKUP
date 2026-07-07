@@ -82,7 +82,7 @@ Scripts que ofrecen funcionalidades análogas a las herramientas de Linux para e
 
 ### 🧪 Scripts de Pruebas y Post-Instalación
 Scripts de aprovisionamiento optimizados para ejecutar tras la instalación limpia de un sistema operativo dentro de una máquina virtual (VirtualBox).
-*   **`posinstalvb1.sh`**: Ejecutar tras la instalación del SO, para instalar las Guest Additions, dado que aun no se puede copiar entre anfitrión y huesped se recomienda casarlo a partir de una carpeta `compartir` en el anfitrión montandola del siguiente modo:
+*   **`posinstalvb1.sh`**: Ejecutar tras la instalación del SO, para instalar las Guest Additions, dado que aun no se puede copiar entre anfitrión y huesped se recomienda pasarlo a partir de una carpeta `compartir` en el anfitrión montandola del siguiente modo:
 [Ctrl + Alt + T]
 ```bash
 # 1. Crear una carpeta temporal en tu usuario
@@ -95,7 +95,7 @@ cd ~/vbox_temp
 cp posinstalvb1.sh ~/ && cd ~/ && chmod +x posinstalvb1.sh
 ./posinstalvb1.sh
 ```
-*   **`posinstalvb2.sh`**: Se puede ejecutar tras `./posinstalvb1.sh` para limpiar el sistema y apagarlo asegurando que el disco virtual pese lo menos posible antes de tomar ina instantanea inicial para poder volver atrás si sale mal alguna prueba. Se puede ejecutar de la siguente forma dado que el script anterior ya deve montar automáticamente la carpeta `compartir` (`Automontar` y `Hacer permanente` devió configurarse anteriormente en VirtualBox):
+*   **`posinstalvb2.sh`**: Se puede ejecutar tras `./posinstalvb1.sh` para limpiar el sistema y apagarlo asegurando que el disco virtual pese lo menos posible antes de tomar una instantanea inicial para poder volver atrás si sale mal alguna prueba. Se puede ejecutar de la siguente forma dado que el script anterior ya debe montar automáticamente la carpeta `compartir` (`Automontar` y `Hacer permanente` devió configurarse anteriormente en VirtualBox):
 [Ctrl + Alt + T]
 ```bash
 cp /media/sf_compartir/posinstalvb2.sh .
