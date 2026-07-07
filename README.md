@@ -78,12 +78,37 @@ Scripts que ofrecen funcionalidades análogas a las herramientas de Linux para e
     5. Symfony
     6. React
     7. Node
-    8.Python
+    8. Python
 
 ### 🧪 Scripts de Pruebas y Post-Instalación
-
-*   **`posinstalvb1.sh` / `posinstalvb2.sh`**: Scripts de aprovisionamiento optimizados para ejecutar tras la instalación limpia de un sistema operativo dentro de una máquina virtual (VirtualBox).
+Scripts de aprovisionamiento optimizados para ejecutar tras la instalación limpia de un sistema operativo dentro de una máquina virtual (VirtualBox).
+*   **`posinstalvb1.sh`**: Ejecutar tras la instalación del SO, para instalar las Guest Additions, dado que aun no se puede copiar entre anfitrión y huesped se recomienda casarlo a partir de una carpeta `compartir` en el anfitrión montandola del siguiente modo:
+[Ctrl + Alt + T]
+```bash
+# 1. Crear una carpeta temporal en tu usuario
+mkdir -p ~/vbox_temp
+# 2. Montar la carpeta compartida (usa el "Nombre de la carpeta" del Paso 1)
+sudo mount -t vboxsf compartir ~/vbox_temp 2>/dev/null || sudo mount compartir ~/vbox_temp
+# 3. Entrar a la carpeta temporal
+cd ~/vbox_temp
+# 4. Copiar tu instalador al equipo e iniciarlo
+cp posinstalvb1.sh ~/ && cd ~/ && chmod +x posinstalvb1.sh
+./posinstalvb1.sh
+```
+*   **`posinstalvb2.sh`**: Se puede ejecutar tras `./posinstalvb1.sh` para limpiar el sistema y apagarlo asegurando que el disco virtual pese lo menos posible antes de tomar ina instantanea inicial para poder volver atrás si sale mal alguna prueba. Se puede ejecutar de la siguente forma dado que el script anterior ya deve montar automáticamente la carpeta `compartir` (`Automontar` y `Hacer permanente` devió configurarse anteriormente en VirtualBox):
+[Ctrl + Alt + T]
+```bash
+cp /media/sf_compartir/posinstalvb2.sh .
+./posinstalvb2.sh
+```
 *   **`cp_pruebas_VB.sh`**: Script auxiliar para copiar y verificar datos dentro de los entornos de prueba virtualizados.
+[Ctrl + Alt + T]
+```bash
+cp /media/sf_compartir/cp_pruebas_VB.sh .
+./cp_pruebas_VB.sh
+cd ~/BACKUP
+./panel.sh
+```
 
 ---
 
